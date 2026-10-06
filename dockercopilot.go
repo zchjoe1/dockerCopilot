@@ -9,10 +9,12 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"strings"
 
 	"github.com/onlyLTY/dockerCopilot/internal/config"
 	"github.com/onlyLTY/dockerCopilot/internal/handler"
 	"github.com/onlyLTY/dockerCopilot/internal/svc"
+	MyType "github.com/onlyLTY/dockerCopilot/internal/types"
 	"github.com/onlyLTY/dockerCopilot/internal/utiles"
 	"github.com/robfig/cron/v3"
 	"github.com/zeromicro/go-zero/core/conf"
@@ -80,25 +82,66 @@ export const customImageLogos = {
 		}
 	}
 
-	list, err := utiles.GetImagesList(ctx)
-	if err != nil {
+	// 启动时先探一次镜像列表：连不上 Docker 就直接退出，避免服务起在半残状态。
+	// （实际的检测与白名单过滤在下面的 checkAll 里，它会再取一次。）
+	if _, err := utiles.GetImagesList(ctx); err != nil {
 		logx.Errorf("panic获取镜像列表出错: %v", err)
 		panic(err)
 	}
-	go ctx.HubImageInfo.CheckUpdate(list)
-	corndanmu := cron.New(cron.WithParser(cron.NewParser(
-		cron.Minute | cron.Hour | cron.Dom | cron.Month | cron.Dow,
-	)))
-	_, err = corndanmu.AddFunc("30 * * * *", func() {
-		list, err := utiles.GetImagesList(ctx)
+	// ── 本地修改（2026-10-07）────────────────────────────────────────────
+	// ① CHECK_ONLY：只检测指定镜像（逗号分隔，不含 tag）。
+	//    上游每轮检查【全部】镜像，每个约 2 次 registry 请求（取 token + 取 manifest）。
+	//    本机 22 个镜像 → 每轮约 44 次请求；Docker Hub 匿名限流是 100 次 manifest/6h/IP
+	//    → 单纯把周期调短会撞限流，反而查不出更新。设白名单后只查关心的那个，多快都安全。
+	// ② CHECK_CRON：检测周期。上游硬编码 "30 * * * *"（每小时 :30），
+	//    镜像推上去最多等 1 小时才被发现；且没有任何「立即检查」HTTP 端点
+	//    （GET /api/containers 返回的只是内存缓存 ctx.HubImageInfo.Data）。
+	// 两个变量都不设时，行为与上游完全一致（零变化）。
+	checkOnly := strings.TrimSpace(os.Getenv("CHECK_ONLY"))
+	var onlyNames []string
+	if checkOnly != "" {
+		for _, n := range strings.Split(checkOnly, ",") {
+			if n = strings.TrimSpace(n); n != "" {
+				onlyNames = append(onlyNames, n)
+			}
+		}
+		logx.Infof("镜像更新检测白名单 CHECK_ONLY=%q（仅检测这些镜像）", checkOnly)
+	}
+	// checkAll 统一两处调用（启动时 + 定时）的过滤逻辑，避免只改一处造成行为不一致。
+	checkAll := func() {
+		l, err := utiles.GetImagesList(ctx)
 		if err != nil {
 			logx.Errorf("panic获取镜像列表出错: %v", err)
 			panic(err)
 		}
-		ctx.HubImageInfo.CheckUpdate(list)
-	})
+		if len(onlyNames) == 0 {
+			ctx.HubImageInfo.CheckUpdate(l)
+			return
+		}
+		filtered := make([]MyType.Image, 0, len(onlyNames))
+		for _, img := range l {
+			for _, n := range onlyNames {
+				if img.ImageName == n {
+					filtered = append(filtered, img)
+					break
+				}
+			}
+		}
+		logx.Infof("白名单命中 %d / %d 个镜像", len(filtered), len(l))
+		ctx.HubImageInfo.CheckUpdate(filtered)
+	}
+	go checkAll()
+	corndanmu := cron.New(cron.WithParser(cron.NewParser(
+		cron.Minute | cron.Hour | cron.Dom | cron.Month | cron.Dow,
+	)))
+	checkCron := os.Getenv("CHECK_CRON")
+	if checkCron == "" {
+		checkCron = "30 * * * *"
+	}
+	logx.Infof("镜像更新检测周期: %q（可用环境变量 CHECK_CRON 覆盖）", checkCron)
+	_, err = corndanmu.AddFunc(checkCron, checkAll)
 	if err != nil {
-		logx.Errorf("panic添加定时任务出错: %v", err)
+		logx.Errorf("panic添加定时任务出错（CHECK_CRON=%q，请检查 cron 表达式格式）: %v", checkCron, err)
 		panic(err)
 	}
 	corndanmu.Start()

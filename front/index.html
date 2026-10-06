@@ -1,0 +1,57 @@
+<!DOCTYPE html>
+<html lang="zh-CN" class="h-full booting">
+  <head>
+    <meta charset="UTF-8" />
+
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="apple-mobile-web-app-title" content="Docker Copilot" />
+    <meta name="apple-mobile-web-app-icon" content="/logo.png" />
+    <link rel="manifest" href="/manifest.json" />
+    <link rel="icon" type="image/png" href="/logo.png" />
+    <link rel="apple-touch-icon" href="/logo.png" />
+    <meta name="theme-color" content="#0ea5e9" />
+    <title>Docker Copilot</title>
+    <meta name="description" content="Docker容器管理平台" />
+    <!-- 【本地修改 2026-10-07】界面在拿到 JWT 之前先隐藏，避免闪一下空壳。
+         用 <html> 上的 class 而不是 #root 的内联样式：脚本在 <head> 里执行时
+         <body> 还没解析出来，getElementById('root') 会是 null，样式改不上。 -->
+    <style>html.booting #root{visibility:hidden}</style>
+    <script type="module" crossorigin src="/assets/index-BUWPFL6N.js"></script>
+    <link rel="stylesheet" crossorigin href="/assets/index-DqMo61zh.css">
+  </head>
+  <body class="h-full bg-gray-50 dark:bg-gray-900 transition-colors duration-300">
+    <div id="root" class="h-full"></div>
+    <!-- 自动登录：后端已不校验 secretKey，这里静默取一次 JWT。
+         放在 body 末尾的普通脚本会在 type="module" 之前执行（模块是 defer 的）。
+         已有 token 直接显示；取不到 token（例如后端还是旧版）也显示，走原来的手动登录。 -->
+    <script>
+    (function () {
+      // 自动登录（本地修改 2026-10-07）：用户要求去掉密码功能，不再让手输密钥。
+      //
+      // 前端实际用的存储键是 docker_copilot_token（裸 JWT 字符串），
+      // 从压缩后的 index-BUWPFL6N.js 里确认：
+      //   请求拦截器  localStorage.getItem("docker_copilot_token") → Authorization: Bearer
+      //   登录成功    localStorage.setItem("docker_copilot_token", jwt)
+      //   初始化      有该键即视为已认证，否则弹「请输入密钥进行认证」
+      // （旧版前端用的 externalControllers 键在新版已废弃，别再用。）
+      var KEY = 'docker_copilot_token';
+      function show() { document.documentElement.classList.remove('booting'); }
+      function fresh() { try { return sessionStorage.getItem('dc_token_fresh') === '1'; } catch (e) { return false; } }
+      if (localStorage.getItem(KEY) && fresh()) { show(); return; }
+      fetch('/api/auth', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ secretKey: 'auto' })
+      }).then(function (r) { return r.json(); }).then(function (j) {
+        var jwt = j && j.data && j.data.jwt;
+        if (!jwt) { show(); return; }          // 取不到就显示，走原来的手动登录
+        localStorage.setItem(KEY, jwt);
+        try { sessionStorage.setItem('dc_token_fresh', '1'); } catch (e) {}
+        location.reload();
+      }).catch(function () { show(); });
+    })();
+    </script>
+  </body>
+</html>
