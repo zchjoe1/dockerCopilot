@@ -48,5 +48,5 @@ jobs:
           platforms: linux/amd64
           push: true
           tags: |
-            zchjoe/dockercopilot:local
-            zchjoe/dockercopilot:local-${{ github.run_number }}
+            zchjoe/dockercopilot:latest
+            zchjoe/dockercopilot:latest-${{ github.run_number }}

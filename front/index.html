@@ -224,5 +224,204 @@
 })();
 
     </script>
+      <!-- 【本地新增 2026-10-07】飞牛 compose 项目管理页。
+         和设置页同样的做法：原生 DOM + 全内联样式。
+         应用是编译期 Tailwind，没出现在原源码里的类名不会有对应 CSS，所以不用 class。 -->
+    <script>
+    (function () {
+      if (window.__dcMountCompose) return;
+      var S = {
+        box: 'background:#fff;border:1px solid #e5e7eb;border-radius:12px;padding:18px;box-shadow:0 1px 2px rgba(0,0,0,.04)',
+        h: 'font-size:15px;font-weight:600;color:#111827;margin:0 0 10px',
+        btn: 'padding:8px 16px;border:none;border-radius:8px;background:#0ea5e9;color:#fff;font-size:13px;font-weight:600;cursor:pointer',
+        btn2: 'padding:8px 14px;border:1px solid #d1d5db;border-radius:8px;background:#fff;color:#374151;font-size:13px;cursor:pointer',
+        inp: 'width:100%;box-sizing:border-box;padding:10px 12px;border:1px solid #d1d5db;border-radius:8px;font-size:12.5px;line-height:1.6;font-family:ui-monospace,Menlo,Consolas,monospace;color:#111827;background:#fafafa;resize:vertical'
+      };
+      function el(tag, style, text) {
+        var e = document.createElement(tag);
+        if (style) e.setAttribute('style', style);
+        if (text != null) e.textContent = text;
+        return e;
+      }
+      function card() { return el('div', S.box); }
+      function note(text, color) {
+        return el('div', 'font-size:12px;color:' + (color || '#6b7280') + ';margin-top:8px;line-height:1.6', text);
+      }
+
+      window.__dcMountCompose = function (root) {
+        root.innerHTML = '';
+        var wrap = el('div', 'padding:4px 8px 24px');
+        root.appendChild(wrap);
+
+        var head = el('div', 'margin-bottom:12px');
+        head.appendChild(el('h2', 'font-size:20px;font-weight:700;color:#111827;margin:0 0 4px', 'Compose 项目管理'));
+        head.appendChild(el('p', 'font-size:13px;color:#6b7280;margin:0',
+          '直接读取和编辑飞牛的 compose 文件，改完可以一键生效（docker compose up -d）。保存时会自动备份旧文件。'));
+        wrap.appendChild(head);
+
+        var msg = el('div', 'font-size:13px;min-height:20px;margin-bottom:10px');
+        wrap.appendChild(msg);
+
+        var grid = el('div', 'display:flex;gap:16px;align-items:flex-start;flex-wrap:wrap');
+        wrap.appendChild(grid);
+
+        var left = card();
+        left.setAttribute('style', S.box + ';width:250px;flex:none;max-height:72vh;overflow:auto');
+        var right = card();
+        right.setAttribute('style', S.box + ';flex:1;min-width:420px');
+        grid.appendChild(left);
+        grid.appendChild(right);
+
+        // ── 左：项目列表 ────────────────────────────────────────────
+        left.appendChild(el('h3', S.h, '项目'));
+        var list = el('div');
+        left.appendChild(list);
+        var refresh = el('button', S.btn2 + ';margin-top:12px;width:100%', '刷新列表');
+        left.appendChild(refresh);
+
+        // ── 右：编辑器 ──────────────────────────────────────────────
+        var title = el('h3', S.h, '未选择项目');
+        right.appendChild(title);
+        var path = el('div', 'font-size:11px;color:#9ca3af;font-family:ui-monospace,Menlo,monospace;margin:-4px 0 10px;word-break:break-all');
+        right.appendChild(path);
+
+        var ta = document.createElement('textarea');
+        ta.setAttribute('style', S.inp + ';min-height:360px');
+        ta.spellcheck = false;
+        ta.disabled = true;
+        right.appendChild(ta);
+
+        var bar = el('div', 'display:flex;gap:8px;flex-wrap:wrap;margin-top:12px');
+        right.appendChild(bar);
+        var bSave = el('button', S.btn, '保存');
+        var bCheck = el('button', S.btn2, '语法校验');
+        var bUp = el('button', S.btn2, '一键生效');
+        var bDown = el('button', S.btn2 + ';color:#b91c1c;border-color:#fca5a5', '停止并删除');
+        [bSave, bCheck, bUp, bDown].forEach(function (b) { b.disabled = true; bar.appendChild(b); });
+
+        var out = el('pre', 'margin:12px 0 0;padding:12px;background:#0f172a;color:#e2e8f0;border-radius:8px;font-size:12px;line-height:1.6;max-height:280px;overflow:auto;white-space:pre-wrap;word-break:break-all;display:none');
+        right.appendChild(out);
+
+        var dirty = false;
+        var current = null;
+
+        function setMsg(t, color) { msg.textContent = t || ''; msg.style.color = color || '#6b7280'; }
+        function showOut(t) {
+          out.style.display = 'block';
+          out.textContent = t || '(无输出)';
+        }
+        function markDirty(v) {
+          dirty = v;
+          title.textContent = current ? ('编辑：' + current + (dirty ? '  ●未保存' : '')) : '未选择项目';
+        }
+
+        ta.addEventListener('input', function () { if (!dirty) markDirty(true); });
+
+        // 未保存就切换项目时给个确认，避免手一抖丢掉改动
+        function confirmLeave() {
+          return !dirty || window.confirm('当前项目有未保存的改动，确定要切换吗？');
+        }
+
+        function open(name) {
+          if (!confirmLeave()) return;
+          setMsg('读取中…');
+          fetch('/api/compose/file?name=' + encodeURIComponent(name))
+            .then(function (r) { return r.json(); })
+            .then(function (j) {
+              if (j.code !== 200) { setMsg('✗ ' + j.msg, '#dc2626'); return; }
+              current = name;
+              ta.disabled = false;
+              ta.value = j.data.content;
+              path.textContent = j.data.project.configFile;
+              markDirty(false);
+              out.style.display = 'none';
+              [bSave, bCheck, bUp, bDown].forEach(function (b) { b.disabled = false; });
+              setMsg('已载入 ' + name);
+            })
+            .catch(function () { setMsg('✗ 读取失败', '#dc2626'); });
+        }
+
+        function renderList(data) {
+          list.innerHTML = '';
+          var ps = data.projects || [];
+          if (!data.available) {
+            list.appendChild(note('容器里找不到 compose 二进制：' + data.bin +
+              '。需要把它上传到挂载目录（见下方说明）。', '#b45309'));
+          }
+          if (!ps.length) {
+            list.appendChild(note('没有发现 compose 项目（扫描目录：' + data.root + '）'));
+            return;
+          }
+          ps.forEach(function (p) {
+            var item = el('div', 'padding:9px 10px;border-radius:8px;cursor:pointer;font-size:13px;color:#111827;margin-bottom:4px;border:1px solid transparent');
+            item.textContent = p.name;
+            item.onmouseenter = function () { item.style.background = '#f3f4f6'; };
+            item.onmouseleave = function () { item.style.background = ''; };
+            item.onclick = function () { open(p.name); };
+            list.appendChild(item);
+          });
+          setMsg('共 ' + ps.length + ' 个项目');
+        }
+
+        function loadList() {
+          setMsg('加载中…');
+          fetch('/api/compose')
+            .then(function (r) { return r.json(); })
+            .then(function (j) {
+              if (j.code !== 200) { setMsg('✗ ' + j.msg, '#dc2626'); return; }
+              renderList(j.data);
+            })
+            .catch(function () { setMsg('✗ 加载失败', '#dc2626'); });
+        }
+
+        function save() {
+          if (!current) return;
+          setMsg('保存中…');
+          fetch('/api/compose/file', {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ name: current, content: ta.value })
+          }).then(function (r) { return r.json(); }).then(function (j) {
+            if (j.code !== 200) { setMsg('✗ ' + j.msg, '#dc2626'); return; }
+            markDirty(false);
+            setMsg('✓ 已保存' + (j.data && j.data.backup ? '，备份：' + j.data.backup : ''), '#16a34a');
+          }).catch(function () { setMsg('✗ 保存失败', '#dc2626'); });
+        }
+
+        function apply(action, label) {
+          if (!current) return;
+          if (dirty && !window.confirm('有未保存的改动，确定直接' + label + '吗？')) return;
+          setMsg(label + '中…（可能要拉镜像，慢的话请等）');
+          out.style.display = 'block';
+          out.textContent = '执行中…';
+          fetch('/api/compose/apply', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ name: current, action: action })
+          }).then(function (r) { return r.json(); }).then(function (j) {
+            showOut(j.data && j.data.output);
+            if (j.code === 200) setMsg('✓ ' + label + '完成', '#16a34a');
+            else setMsg('✗ ' + j.msg, '#dc2626');
+          }).catch(function () { showOut('网络错误'); setMsg('✗ 请求失败', '#dc2626'); });
+        }
+
+        bSave.onclick = save;
+        bCheck.onclick = function () { apply('config', '语法校验'); };
+        bUp.onclick = function () { apply('up', '一键生效'); };
+        bDown.onclick = function () {
+          if (!window.confirm('会停止并删除「' + current + '」的容器，确定吗？')) return;
+          apply('down', '停止并删除');
+        };
+        refresh.onclick = loadList;
+
+        right.appendChild(note(
+          '「一键生效」等价于在项目目录里执行 docker compose -p <项目名> up -d --remove-orphans。' +
+          '如果 compose 里引用了本地还没有的镜像，会卡在拉取上（飞牛当前的镜像拉取本身有问题），' +
+          '下面会打印完整命令输出。'));
+
+        loadList();
+      };
+    })();
+    </script>
   </body>
 </html>

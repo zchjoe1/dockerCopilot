@@ -14,7 +14,13 @@ import (
 	"github.com/zeromicro/go-zero/rest"
 )
 
-func TestProgressRouteRequiresJWT(t *testing.T) {
+// 【本地修改 2026-10-07】上游的这个用例断言「不带 JWT 访问 /api/progress 返回 401」，
+// 但本地版按用户要求去掉了全部 5 处 rest.WithJwt（见 routes.go 顶部注释），
+// 密码校验已经不存在，所以该断言不再成立。
+//
+// 这里改成断言【新】的既定行为：不带任何凭证也能访问。这不是「测试挂了就改测试」，
+// 而是把这次有意的改动固化成用例 —— 哪天有人把 JWT 加回来，这个用例会立刻报红。
+func TestProgressRouteDoesNotRequireJWT(t *testing.T) {
 	port := getFreePort(t)
 	cfg := config.Config{}
 	cfg.Host = "127.0.0.1"
@@ -34,8 +40,8 @@ func TestProgressRouteRequiresJWT(t *testing.T) {
 	}
 	defer resp.Body.Close()
 
-	if resp.StatusCode != http.StatusUnauthorized {
-		t.Fatalf("expected 401 without JWT, got %d", resp.StatusCode)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("本地版已取消鉴权，期望 200，实际 %d", resp.StatusCode)
 	}
 }
 

@@ -26,6 +26,14 @@ type Info struct {
 	CreateTime  string `json:"createTime"`
 	RunningTime string `json:"runningTime"`
 	HaveUpdate  bool   `json:"haveUpdate"`
+
+	// 【本地新增 2026-10-07】资源占用，取自后台采样缓存（utiles/containerstats.go）。
+	// 用指针：没有数据时序列化成 null，前端据此不显示这一段，
+	// 这样「容器已停止 / 还没采到」和「CPU 真的是 0%」在界面上不会混淆。
+	CPUPercent *float64 `json:"cpuPercent"`
+	MemUsed    *uint64  `json:"memUsed"`
+	MemLimit   *uint64  `json:"memLimit"`
+	MemPercent *float64 `json:"memPercent"`
 }
 
 func NewContainersListLogic(ctx context.Context, svcCtx *svc.ServiceContext) *ContainersListLogic {
@@ -76,6 +84,17 @@ func (l *ContainersListLogic) ContainersList() (resp *types.Resp, err error) {
 		containerInfo.CreateTime = t.Format("2006-01-02 15:04:05")
 		containerInfo.RunningTime = v.Status
 		containerInfo.HaveUpdate = v.Update
+		// 【本地新增 2026-10-07】带上资源占用。读的是后台采样缓存，不发起 Docker 调用，
+		// 所以列表接口的耗时不受影响。采样器只采运行中的容器，停止的自然取不到。
+		if v.State == "running" {
+			if st, ok := utiles.GetContainerStats(v.ID); ok {
+				cpu, mem, limit, memPct := st.CPUPercent, st.MemUsed, st.MemLimit, st.MemPercent
+				containerInfo.CPUPercent = &cpu
+				containerInfo.MemUsed = &mem
+				containerInfo.MemLimit = &limit
+				containerInfo.MemPercent = &memPct
+			}
+		}
 		containerInfoList = append(containerInfoList, containerInfo)
 	}
 	resp.Data = containerInfoList

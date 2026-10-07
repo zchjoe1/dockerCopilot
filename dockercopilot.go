@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"embed"
 	"encoding/json"
 	"flag"
@@ -105,6 +106,10 @@ export const customImageLogos = {
 
 	go checkAll()
 
+	// 【本地新增 2026-10-07】容器资源占用（CPU/内存）后台采样，
+	// 供 /api/containers 把数字直接带进卡片。详见 utiles/containerstats.go 顶部说明。
+	utiles.StartStatsSampler(ctx)
+
 	corndanmu := cron.New(cron.WithParser(cron.NewParser(
 		cron.Minute | cron.Hour | cron.Dom | cron.Month | cron.Dow,
 	)))
@@ -135,6 +140,7 @@ export const customImageLogos = {
 	logx.Info("程序版本" + config.Version)
 	server.Start()
 }
+
 // ── 本地新增（2026-10-07）：设置驱动的检测 ──────────────────────────
 var (
 	appCtx *svc.ServiceContext
@@ -282,6 +288,129 @@ func settingsPutHandler(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// ── 本地新增（2026-10-07）：飞牛 compose 项目的读取 / 编辑 / 一键生效 ──────
+//
+// 项目名走查询参数或 JSON body，不用路径参数 —— 少依赖一层 go-zero 的
+// 路径参数提取方式。名字合法性由 utiles 侧白名单兜底（禁止 ../ 穿越）。
+type composeBody struct {
+	Name    string `json:"name"`
+	Content string `json:"content"`
+	Action  string `json:"action"`
+}
+
+func composeListHandler(w http.ResponseWriter, r *http.Request) {
+	projects, err := utiles.ListComposeProjects()
+	if err != nil {
+		httpx.WriteJson(w, http.StatusOK, MyType.Resp{Code: 50000, Msg: err.Error()})
+		return
+	}
+	httpx.WriteJson(w, http.StatusOK, MyType.Resp{
+		Code: 200,
+		Msg:  "success",
+		Data: map[string]interface{}{
+			"root":      utiles.ComposeRoot,
+			"bin":       utiles.ComposeBin,
+			"available": utiles.ComposeAvailable(),
+			"projects":  projects,
+		},
+	})
+}
+
+func composeGetHandler(w http.ResponseWriter, r *http.Request) {
+	name := strings.TrimSpace(r.URL.Query().Get("name"))
+	if name == "" {
+		httpx.WriteJson(w, http.StatusOK, MyType.Resp{Code: 40000, Msg: "缺少 name 参数"})
+		return
+	}
+	p, content, err := utiles.ReadCompose(name)
+	if err != nil {
+		httpx.WriteJson(w, http.StatusOK, MyType.Resp{Code: 40001, Msg: err.Error()})
+		return
+	}
+	httpx.WriteJson(w, http.StatusOK, MyType.Resp{
+		Code: 200,
+		Msg:  "success",
+		Data: map[string]interface{}{"project": p, "content": content},
+	})
+}
+
+func composePutHandler(w http.ResponseWriter, r *http.Request) {
+	var body composeBody
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		httpx.WriteJson(w, http.StatusOK, MyType.Resp{Code: 40000, Msg: "请求体不是合法 JSON: " + err.Error()})
+		return
+	}
+	backup, err := utiles.SaveCompose(strings.TrimSpace(body.Name), body.Content)
+	if err != nil {
+		httpx.WriteJson(w, http.StatusOK, MyType.Resp{Code: 50000, Msg: err.Error()})
+		return
+	}
+	logx.Infof("compose 已保存: %s（备份 %s）", body.Name, backup)
+	httpx.WriteJson(w, http.StatusOK, MyType.Resp{
+		Code: 200,
+		Msg:  "success",
+		Data: map[string]interface{}{"backup": backup},
+	})
+}
+
+func composeApplyHandler(w http.ResponseWriter, r *http.Request) {
+	var body composeBody
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		httpx.WriteJson(w, http.StatusOK, MyType.Resp{Code: 40000, Msg: "请求体不是合法 JSON: " + err.Error()})
+		return
+	}
+	name := strings.TrimSpace(body.Name)
+	// 即使失败也把命令输出带回前端：出错时那段输出才是最有用的信息。
+	out, err := utiles.ApplyCompose(name, strings.TrimSpace(body.Action))
+	code, msg := 200, "success"
+	if err != nil {
+		code, msg = 50000, err.Error()
+	}
+	logx.Infof("compose 生效: %s action=%q err=%v", name, body.Action, err)
+	httpx.WriteJson(w, http.StatusOK, MyType.Resp{
+		Code: code,
+		Msg:  msg,
+		Data: map[string]interface{}{"output": out, "ok": err == nil},
+	})
+}
+
+// POST /api/image/tag  {source, target}
+//
+// 给本地已有镜像重打一个标签。加它是因为一个具体处境：
+// CI 推的标签是 zchjoe/dockercopilot:latest，而飞牛上现存的镜像是 :local，
+// 飞牛的镜像拉取又是坏的（errno 52428822），compose 见到本地没有 :latest 就会去拉、然后失败。
+// 有了这个接口就能就地 :local → :latest，不用拉任何东西。
+func imageTagHandler(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Source string `json:"source"`
+		Target string `json:"target"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		httpx.WriteJson(w, http.StatusOK, MyType.Resp{Code: 40000, Msg: "请求体不是合法 JSON: " + err.Error()})
+		return
+	}
+	body.Source = strings.TrimSpace(body.Source)
+	body.Target = strings.TrimSpace(body.Target)
+	if body.Source == "" || body.Target == "" {
+		httpx.WriteJson(w, http.StatusOK, MyType.Resp{Code: 40000, Msg: "需要 source 和 target，例如 {\"source\":\"zchjoe/dockercopilot:local\",\"target\":\"zchjoe/dockercopilot:latest\"}"})
+		return
+	}
+	if appCtx == nil || appCtx.DockerClient == nil {
+		httpx.WriteJson(w, http.StatusOK, MyType.Resp{Code: 50000, Msg: "docker client 未就绪"})
+		return
+	}
+	if err := appCtx.DockerClient.ImageTag(context.Background(), body.Source, body.Target); err != nil {
+		httpx.WriteJson(w, http.StatusOK, MyType.Resp{Code: 50000, Msg: "打标签失败: " + err.Error()})
+		return
+	}
+	logx.Infof("镜像已打标签: %s -> %s", body.Source, body.Target)
+	httpx.WriteJson(w, http.StatusOK, MyType.Resp{
+		Code: 200,
+		Msg:  "success",
+		Data: map[string]string{"source": body.Source, "target": body.Target},
+	})
+}
+
 func RegisterHandlers(engine *rest.Server) {
 	frontFS, err := fs.Sub(embeddedFront, "front")
 	if err != nil {
@@ -318,6 +447,37 @@ func RegisterHandlers(engine *rest.Server) {
 				Method:  http.MethodPut,
 				Path:    "/api/settings",
 				Handler: settingsPutHandler,
+			},
+		},
+	)
+
+	// 【本地新增 2026-10-07】飞牛 compose：列表 / 读取 / 保存 / 一键生效。
+	engine.AddRoutes(
+		[]rest.Route{
+			{
+				Method:  http.MethodGet,
+				Path:    "/api/compose",
+				Handler: composeListHandler,
+			},
+			{
+				Method:  http.MethodGet,
+				Path:    "/api/compose/file",
+				Handler: composeGetHandler,
+			},
+			{
+				Method:  http.MethodPut,
+				Path:    "/api/compose/file",
+				Handler: composePutHandler,
+			},
+			{
+				Method:  http.MethodPost,
+				Path:    "/api/compose/apply",
+				Handler: composeApplyHandler,
+			},
+			{
+				Method:  http.MethodPost,
+				Path:    "/api/image/tag",
+				Handler: imageTagHandler,
 			},
 		},
 	)
