@@ -1,16 +1,22 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""在容器卡片上加一行资源占用：`CPU 1.9% · 内存 43.6MB`。
+"""在容器卡片上、和「运行: xxx」同一列里加一行资源占用。
 
-为什么插在卡片这一层、而不是塞进原来的「运行: xxx」那一行：
-    卡片文字列（图标右边那条）只有 132px，1280px 视口下只剩 102px。
-    实测一行带标签的写法要 143px（`CPU 1.9% · 内存 43.6MB`），
-    塞进文字列必然被 truncate 截断（内存那段会被省略号吃掉）。
-    卡片本身是 block 布局（class 里没有 flex），所以把这一行作为
-    「头部行」的兄弟节点插入，就能拿到整张卡片的宽度（1280px 下约 178px），
-    143px 的文案放得下，而且不用改动原有的「运行: xxx」那一行。
+对齐位置：插在「运行/状态」元素所在的那个 children 数组（文字列 flex-1 min-w-0）里，
+所以它和上面那行左对齐 —— 用户明确要求「资源占用数据要对齐运行时间」。
 
-只做一处定点插入，插入前断言锚点在【全文件唯一】。
+关于宽度（这一行返工过很多次，实测数据记在这里免得再猜）：
+    「文字列」可用宽度随视口变化：
+        1280px → 102px      1400px → 132px      1600px 及以上 → 174px
+    `CPU 0.6% · 内存 17.7MB` 实测需要 143px：
+        ≥1600px 放得下 → 一行 ✓
+        ≤1400px 放不下 → 这里【不用 truncate】，改用 flex-wrap 自动折两行，
+                        两段各自完整，不会再出现 `内存 17.7…` 被省略号吃掉。
+    也试过不带标签的 `0.6% · 17.7MB`（87px，任何宽度都放得下），
+    但用户要求能看出「哪个是 CPU、哪个是内存」，所以标签必须留。
+
+front/assets/index-*.js 是上游压缩产物、没有 sourcemap，只能定点插入。
+插入前断言锚点在【全文件唯一】。
 """
 import sys
 
@@ -19,27 +25,15 @@ BUNDLE = "front/assets/index-BUWPFL6N.js"
 # 锚点：原「运行/状态」那一行的结尾。结构是
 #     ...children:"状态: 已停止"})})]})]}),!a&&...
 #                                ↑ 这个 ] 关掉的是「文字列」flex-1 min-w-0 的 children
-# 把资源行插在它前面，资源行就成了「运行: xxx」的同级兄弟 ——
-# 也就是和上面那行左对齐（之前插在卡片层，会挂在最左边、对不齐，被用户指出来了）。
-ANCHOR = '!a&&o.jsx("div",{className:"flex gap-1 mt-3 pt-3 border-t'
+ANCHOR = 'children:"状态: 已停止"})})]'
 
-# 资源行本身。要点：
-#   · 用 IIFE 包一层，f() 自带，不依赖压缩后的变量名
+# 资源行。要点：
+#   · IIFE 包一层，f() 自带，不依赖压缩后的变量名
 #   · cpuPercent / memUsed 为 null（已停止、还没采到）时整行渲染成 null，不占位
-#   · title 里放完整信息（含内存上限），悬停可看全；占用高变红/变黄
-#
-# ⚠️ 关于宽度（返工两次才摸清，数据记在这里免得再踩）：
-#   「文字列」——也就是对齐后这一行的可用宽度——随视口变化：
-#       1280px → 102px     1400px → 132px     1600px → 约 154px
-#   12px 字号下 `CPU 0.1% · 42.6MB` 实测要 154px，1280/1400 视口必然被省略号截断。
-#   想用 `text-[11px]` 缩字号是【无效】的：Tailwind 只生成构建时源码里出现过的类，
-#   那个类原来的 bundle 里没有，压缩后的 CSS 里根本没有这条规则，字号仍是 12px
-#   （实测注入后仍是 154px 就是证据）。
-#   也试过把「CPU / 内存」两个词换成 11px 内联 SVG 图标：
-#   带图标要 117px，1280px 视口只有 102px，照样截断（22/23 张卡中招），所以放弃。
-#   最终就是最朴素的 `0.9% · 18.1MB`：实测 1280/1400/1600 三种视口下 0 溢出，
-#   顺序固定为「CPU% · 内存」，完整说明（含内存上限）放在 title 里悬停可见。
-#   有内存上限时只显示占用率 `87%`（绝对值同样在 title 里），否则也会超宽。
+#   · 用 flex-wrap + gap 排版：放得下就是一行，放不下折两行，
+#     且不在两段之间插「·」——折行时不会在行尾留一个孤零零的分隔符
+#   · 没有内存上限时只显示已用；有上限时写 2.6/3.0GB
+#   · title 放完整信息（含上限），悬停可看全；占用高变红/变黄
 RESOURCE = "".join([
     '(function(){',
     'if(k.cpuPercent==null&&k.memUsed==null)return null;',
@@ -55,11 +49,11 @@ RESOURCE = "".join([
     'warm=(k.cpuPercent!=null&&k.cpuPercent>=50)||(k.memPercent!=null&&k.memPercent>=70),',
     'cls=hot?"text-red-500 dark:text-red-400":',
     'warm?"text-amber-500 dark:text-amber-400":"text-gray-400 dark:text-gray-500";',
-    'return o.jsxs("div",{className:"text-xs mt-2 truncate "+cls,',
+    'return o.jsxs("div",{className:"text-xs "+cls,',
+    'style:{display:"flex",flexWrap:"wrap",gap:"0 6px",alignItems:"baseline"},',
     'title:(cpu?"CPU "+cpu:"")+(cpu&&memFull?" · ":"")+(memFull?"内存 "+memFull:""),',
     'children:[',
     'cpu?o.jsxs("span",{children:["CPU ",cpu]}):null,',
-    'cpu&&mem?" · ":null,',
     'mem?o.jsxs("span",{children:["内存 ",mem]}):null',
     ']})',
     '})()',
@@ -121,11 +115,11 @@ def main() -> int:
     if n > 1:
         raise SystemExit(f"✗ 锚点出现 {n} 次，不唯一，拒绝替换")
 
-    # 插在「运行/状态」元素之后、文字列 children 数组的 ] 之前，
-    # 这样资源行是它的同级兄弟 → 左对齐。
-    out = src.replace(ANCHOR, RESOURCE + "," + ANCHOR)
+    # 插在「运行/状态」元素之后、文字列 children 数组的 ] 之前 → 与它同级、左对齐
+    prefix = ANCHOR[:-1]  # 去掉结尾那个 ]
+    out = src.replace(ANCHOR, prefix + "," + RESOURCE + "]")
     open(BUNDLE, "w", encoding="utf-8").write(out)
-    print(f"✓ 已插入资源行（整卡宽度，带标签）：{len(src)} → {len(out)} 字节 ({len(out)-len(src):+d})")
+    print(f"✓ 已插入资源行（对齐到「运行」那一列）：{len(src)} → {len(out)} 字节 ({len(out)-len(src):+d})")
     print("  括号自检：通过")
     return 0
 

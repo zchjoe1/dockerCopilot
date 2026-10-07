@@ -1,0 +1,14 @@
+{
+  "name": "Docker Copilot",
+  "short_name": "Docker Copilot",
+  "description": "Docker 容器管理平台",
+  "start_url": "/manager",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#0ea5e9",
+  "theme_color": "#0ea5e9",
+  "icons": [
+    { "src": "/logo.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
+    { "src": "/logo.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ]
+}

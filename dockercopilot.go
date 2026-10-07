@@ -512,6 +512,25 @@ func RegisterHandlers(engine *rest.Server) {
 					assetsHandler.ServeHTTP(w, r)
 				},
 			},
+			// 【本地新增 2026-10-07】PWA 资源。
+			// index.html 引用了 /logo.png 和 /manifest.json，但上游既没提供这两个文件、
+			// 也没注册对应路由，一直是 404（浏览器控制台能看到）。
+			// 现在文件已放进 front/，这里补上路由；assetsHandler 就是 frontFS 的根，
+			// 请求路径与文件名一致，直接转过去即可。
+			{
+				Method: http.MethodGet,
+				Path:   "/logo.png",
+				Handler: func(w http.ResponseWriter, r *http.Request) {
+					assetsHandler.ServeHTTP(w, r)
+				},
+			},
+			{
+				Method: http.MethodGet,
+				Path:   "/manifest.json",
+				Handler: func(w http.ResponseWriter, r *http.Request) {
+					assetsHandler.ServeHTTP(w, r)
+				},
+			},
 		},
 	)
 }
