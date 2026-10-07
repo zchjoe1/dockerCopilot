@@ -17,12 +17,24 @@ import (
 const SettingsPath = "/data/settings.json"
 
 type Settings struct {
-	// CheckOnly 只检测这些镜像（逗号分隔，不含 tag）；空 = 全部镜像。
-	// 上游每轮检查全部镜像，每个约 2 次 registry 请求，22 个镜像就是 44 次/轮；
-	// Docker Hub 匿名限流 100 次 manifest/6h/IP，所以周期调短必须配合白名单。
+	// CheckOnly **优先检测名单**（逗号分隔，不含 tag）；空 = 全部镜像都走快档。
+	//
+	// 【2026-10-07 语义调整】原先语义是「**只**检测这些」，其余镜像永远不查 ——
+	// 结果是那 20 个第三方镜像有更新也不知道。现在改为：
+	//   名单里的 → 走**快档** CheckCron；不在名单里的 → 走**慢档** CheckCronOthers。
+	//
+	// ⚠️ 顺带更正一个长期误传：本检测**不消耗** Docker Hub 的 pull 额度。
+	//    checkSingleImage 读远端 digest 用的是 `HEAD /v2/.../manifests/...`，而 Docker 官方
+	//    文档明写「**HEAD requests are not counted**」；取 token 走 auth.docker.io，也不是
+	//    manifest URL。官方口径：一个 pull = 最多两次 manifest 的 **GET**；
+	//    匿名 100 次/6h/IP、认证 200 次/6h/账号。
+	//    ⇒ 白名单存在的理由不是限流，而是「重要镜像勤查、其余慢查」的信号取舍。
 	CheckOnly string `json:"checkOnly"`
-	// CheckCron 检测周期的 cron 表达式；空 = 用环境变量 CHECK_CRON 或默认 "30 * * * *"。
+	// CheckCron 快档周期（优先名单）；空 = 用环境变量 CHECK_CRON 或默认 "30 * * * *"。
 	CheckCron string `json:"checkCron"`
+	// CheckCronOthers 慢档周期（不在优先名单里的其余镜像）；空 = 用环境变量
+	// CHECK_CRON_OTHERS 或默认 "30 4 * * *"（每天 4:30）。显式填 off/none/- = 关闭慢档。
+	CheckCronOthers string `json:"checkCronOthers"`
 }
 
 var (

@@ -145,9 +145,10 @@ export const customImageLogos = {
 var (
 	appCtx *svc.ServiceContext
 
-	cronMu    sync.Mutex
-	cronInst  *cron.Cron
-	cronEntry cron.EntryID
+	cronMu          sync.Mutex
+	cronInst        *cron.Cron
+	cronEntry       cron.EntryID
+	cronEntryOthers cron.EntryID // 慢档（不在优先名单里的其余镜像）
 )
 
 // effectiveCron 按「设置 > 环境变量 > 默认」解析出周期表达式。
@@ -161,7 +162,24 @@ func effectiveCron() string {
 	return "30 * * * *"
 }
 
-// effectiveOnly 按「设置 > 环境变量」解析出白名单原始串。
+// effectiveOthersCron 解析慢档周期：设置 > 环境变量 CHECK_CRON_OTHERS > 默认每天 4:30。
+// 返回空串表示**关闭慢档**（显式填 off/none/-，或不设且想只跑快档时用得到）。
+func effectiveOthersCron() string {
+	v := strings.TrimSpace(utiles.GetSettings().CheckCronOthers)
+	if v == "" {
+		v = strings.TrimSpace(os.Getenv("CHECK_CRON_OTHERS"))
+	}
+	if v == "" {
+		return "30 4 * * *" // 默认每天 4:30 查一次其余镜像
+	}
+	switch strings.ToLower(v) {
+	case "off", "none", "-", "disable", "disabled":
+		return ""
+	}
+	return v
+}
+
+// effectiveOnly 按「设置 > 环境变量」解析出**优先名单**原始串。
 func effectiveOnly() string {
 	if v := strings.TrimSpace(utiles.GetSettings().CheckOnly); v != "" {
 		return v
@@ -187,11 +205,21 @@ func applyCron() error {
 		return fmt.Errorf("cron 表达式 %q 无效（需要 5 段：分 时 日 月 周）: %w", expr, err)
 	}
 	cronEntry = id
-	logx.Infof("镜像更新检测周期: %q（可在「设置」页修改，无需重启）", expr)
+
+	// 慢档：不在优先名单里的其余镜像（2026-10-07 新增）。空串 = 关闭。
+	othersExpr := effectiveOthersCron()
+	if othersExpr != "" {
+		id2, err2 := cronInst.AddFunc(othersExpr, checkOthers)
+		if err2 != nil {
+			return fmt.Errorf("慢档 cron 表达式 %q 无效（需要 5 段：分 时 日 月 周）: %w", othersExpr, err2)
+		}
+		cronEntryOthers = id2
+	}
+	logx.Infof("镜像更新检测周期: 优先名单 %q / 其余 %q（可在「设置」页修改，无需重启）", expr, othersExpr)
 	return nil
 }
 
-// checkAll 取一次镜像列表，按白名单过滤后交给检测器。启动时与每轮定时都会调用。
+// checkAll 是**快档**：只查优先名单（名单为空则查全部）。启动时与每轮定时都会调用。
 func checkAll() {
 	if appCtx == nil {
 		return
@@ -215,18 +243,56 @@ func checkAll() {
 			}
 		}
 	}
-	logx.Infof("白名单命中 %d / %d 个镜像", len(filtered), len(l))
+	logx.Infof("快档：优先名单命中 %d / %d 个镜像", len(filtered), len(l))
 	appCtx.HubImageInfo.CheckUpdate(filtered)
+}
+
+// checkOthers 是**慢档**：只查**不在**优先名单里的其余镜像（2026-10-07 新增）。
+// 名单为空时快档已经查了全部，这里直接返回，避免同一轮重复请求。
+func checkOthers() {
+	if appCtx == nil {
+		return
+	}
+	only := utiles.SplitList(effectiveOnly())
+	if len(only) == 0 {
+		return // 没有优先名单 → 快档就是全量，慢档无事可做
+	}
+	l, err := utiles.GetImagesList(appCtx)
+	if err != nil {
+		logx.Errorf("慢档获取镜像列表出错: %v", err)
+		return
+	}
+	rest := make([]MyType.Image, 0, len(l))
+	for _, img := range l {
+		hit := false
+		for _, n := range only {
+			if img.ImageName == n {
+				hit = true
+				break
+			}
+		}
+		if !hit {
+			rest = append(rest, img)
+		}
+	}
+	if len(rest) == 0 {
+		logx.Infof("慢档：没有需要检查的其余镜像")
+		return
+	}
+	logx.Infof("慢档：检查其余 %d / %d 个镜像", len(rest), len(l))
+	appCtx.HubImageInfo.CheckUpdate(rest)
 }
 
 // settingsView 是 GET /api/settings 的返回：既给出已保存的值，
 // 也给出「实际生效值」，这样界面能显示 env 兜底的结果。
 type settingsView struct {
-	CheckOnly     string `json:"checkOnly"`
-	CheckCron     string `json:"checkCron"`
-	EffectiveOnly string `json:"effectiveOnly"`
-	EffectiveCron string `json:"effectiveCron"`
-	SettingsFile  string `json:"settingsFile"`
+	CheckOnly           string `json:"checkOnly"`
+	CheckCron           string `json:"checkCron"`
+	CheckCronOthers     string `json:"checkCronOthers"`
+	EffectiveOnly       string `json:"effectiveOnly"`
+	EffectiveCron       string `json:"effectiveCron"`
+	EffectiveOthersCron string `json:"effectiveOthersCron"`
+	SettingsFile        string `json:"settingsFile"`
 }
 
 func settingsGetHandler(w http.ResponseWriter, r *http.Request) {
@@ -237,11 +303,13 @@ func settingsGetHandler(w http.ResponseWriter, r *http.Request) {
 		Code: 200,
 		Msg:  "success",
 		Data: settingsView{
-			CheckOnly:     s.CheckOnly,
-			CheckCron:     s.CheckCron,
-			EffectiveOnly: effectiveOnly(),
-			EffectiveCron: effectiveCron(),
-			SettingsFile:  utiles.SettingsPath,
+			CheckOnly:           s.CheckOnly,
+			CheckCron:           s.CheckCron,
+			CheckCronOthers:     s.CheckCronOthers,
+			EffectiveOnly:       effectiveOnly(),
+			EffectiveCron:       effectiveCron(),
+			EffectiveOthersCron: effectiveOthersCron(),
+			SettingsFile:        utiles.SettingsPath,
 		},
 	})
 }
@@ -254,6 +322,7 @@ func settingsPutHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	body.CheckOnly = strings.TrimSpace(body.CheckOnly)
 	body.CheckCron = strings.TrimSpace(body.CheckCron)
+	body.CheckCronOthers = strings.TrimSpace(body.CheckCronOthers)
 
 	// 先校验 cron 再落盘，避免存进去一个永远挂不上的表达式。
 	if body.CheckCron != "" {
@@ -265,6 +334,20 @@ func settingsPutHandler(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	if body.CheckCronOthers != "" {
+		if _, err := cron.ParseStandard(body.CheckCronOthers); err != nil {
+			// 允许 off/none/- 表示关闭慢档，它们不是 cron 表达式
+			switch strings.ToLower(body.CheckCronOthers) {
+			case "off", "none", "-", "disable", "disabled":
+			default:
+				httpx.WriteJson(w, http.StatusOK, xhttp.BaseResponse[types.Nil]{
+					Code: 40001,
+					Msg:  fmt.Sprintf("慢档 cron 表达式 %q 无效（需要 5 段，或填 off 关闭）: %v", body.CheckCronOthers, err),
+				})
+				return
+			}
+		}
+	}
 	if err := utiles.SaveSettings(body); err != nil {
 		httpx.WriteJson(w, http.StatusOK, xhttp.BaseResponse[types.Nil]{Code: 50000, Msg: "写入设置失败: " + err.Error()})
 		return
@@ -273,8 +356,9 @@ func settingsPutHandler(w http.ResponseWriter, r *http.Request) {
 		httpx.WriteJson(w, http.StatusOK, xhttp.BaseResponse[types.Nil]{Code: 40001, Msg: err.Error()})
 		return
 	}
-	logx.Infof("设置已更新: 白名单=%q 周期=%q", body.CheckOnly, effectiveCron())
-	go checkAll() // 改完立刻按新白名单跑一轮，不用等下一个周期
+	logx.Infof("设置已更新: 优先名单=%q 快档=%q 慢档=%q", body.CheckOnly, effectiveCron(), effectiveOthersCron())
+	go checkAll()    // 改完立刻按新名单跑一轮快档，不用等下一个周期
+	go checkOthers() // 慢档也顺带跑一次，便于确认补集对不对
 	httpx.WriteJson(w, http.StatusOK, MyType.Resp{
 		Code: 200,
 		Msg:  "success",

@@ -92,15 +92,16 @@
     var c1 = card();
     c1.appendChild(el('h3', S.h, '镜像更新检测'));
     c1.appendChild(el('p', S.sub,
-      'Docker Copilot 每隔一段时间去镜像仓库查一次有没有新版本。默认会检查全部镜像，' +
-      '每个镜像要发 2 次请求（取 token + 取清单）；Docker Hub 对匿名请求有「100 次 / 6 小时 / IP」的限制，' +
-      '所以如果检测周期很短、镜像又很多，就会被限流，反而查不出更新。' +
-      '把要关注的镜像写进下面的白名单，只查这几个，周期调多短都安全。'));
+      'Docker Copilot 每隔一段时间去镜像仓库查一次有没有新版本。' +
+      '⚠️ 这个检测**不消耗** Docker Hub 的 pull 额度：它读远端 digest 用的是 HEAD 请求，' +
+      '而官方文档明写「HEAD requests are not counted」（取 token 走 auth.docker.io，也不是 manifest URL，同样不计）。' +
+      '所以下面这个名单的作用不是「躲限流」，而是「重要镜像勤查、其余慢查」：' +
+      '名单里的走「快档周期」，不在名单里的走「慢档周期」。'));
 
-    c1.appendChild(el('label', S.lab, '白名单（只检测这些镜像）'));
+    c1.appendChild(el('label', S.lab, '优先检测名单（这些走快档；留空 = 全部镜像都走快档）'));
     var only = el('input', S.inp);
     only.type = 'text';
-    only.placeholder = '留空 = 检测全部镜像；多个用英文逗号分隔';
+    only.placeholder = '留空 = 全部镜像都走快档；多个用英文逗号分隔';
     c1.appendChild(only);
     c1.appendChild(el('p', 'font-size:12px;color:var(--dc-faint);margin:6px 0 0;line-height:1.6',
       '填镜像名，不要带 tag。例如容器用的是 zchjoe/procurement-center:latest，这里就填 zchjoe/procurement-center。'));
@@ -110,9 +111,12 @@
 
     // ── 卡片二：周期 ────────────────────────────────────────────────
     var c2 = card();
-    c2.appendChild(el('h3', S.h, '检测周期'));
+    c2.appendChild(el('h3', S.h, '检测周期（两档）'));
     c2.appendChild(el('p', S.sub,
-      'cron 表达式，5 段：分 时 日 月 周。默认是每小时的第 30 分查一次（上游行为）。'));
+      'cron 表达式，5 段：分 时 日 月 周。' +
+      '「快档」查优先名单里的镜像（名单为空则查全部）；「慢档」查不在名单里的其余镜像 —— ' +
+      '这样重要的镜像可以查得很勤，第三方镜像也不至于永远不查。慢档填 off 可关闭。'));
+    c2.appendChild(el('label', S.lab, '快档周期（优先名单）'));
     var cron = el('input', S.inp);
     cron.type = 'text';
     cron.placeholder = '例如 */5 * * * * 表示每 5 分钟';
@@ -125,6 +129,22 @@
       cronPresets.appendChild(b);
     });
     c2.appendChild(cronPresets);
+
+    c2.appendChild(el('label', S.lab, '慢档周期（不在优先名单里的其余镜像）'));
+    var cronOthers = el('input', S.inp);
+    cronOthers.type = 'text';
+    cronOthers.placeholder = '例如 30 4 * * * 表示每天 4:30；填 off 关闭慢档';
+    c2.appendChild(cronOthers);
+    c2.appendChild(el('p', 'font-size:12px;color:var(--dc-faint);margin:6px 0 0;line-height:1.6',
+      '留空 = 用默认值（每天 4:30）。如果优先名单是空的，快档本来就查了全部，慢档会自动跳过、不会重复查。'));
+    var othersPresets = el('div', 'margin-top:10px');
+    [['每天 4:30', '30 4 * * *'], ['每 6 小时', '30 */6 * * *'], ['每 12 小时', '30 */12 * * *'],
+     ['每天两次', '30 4,16 * * *'], ['关闭慢档', 'off']].forEach(function (p) {
+      var b = el('button', S.btn2, p[0]);
+      b.onclick = function () { cronOthers.value = p[1]; };
+      othersPresets.appendChild(b);
+    });
+    c2.appendChild(othersPresets);
 
     // ── 保存 ────────────────────────────────────────────────────────
     var bar = el('div', 'display:flex;align-items:center;gap:12px;margin:20px 0');
@@ -149,9 +169,11 @@
     function render(s) {
       only.value = s.checkOnly || '';
       cron.value = s.checkCron || '';
+      cronOthers.value = s.checkCronOthers || '';
       info.innerHTML = '';
-      info.appendChild(kv('白名单', s.effectiveOnly || '（未设置 = 全部镜像）'));
-      info.appendChild(kv('检测周期', s.effectiveCron || ''));
+      info.appendChild(kv('优先名单', s.effectiveOnly || '（未设置 = 全部镜像都走快档）'));
+      info.appendChild(kv('快档周期', s.effectiveCron || ''));
+      info.appendChild(kv('慢档周期', s.effectiveOthersCron || '（已关闭）'));
       info.appendChild(kv('设置文件', s.settingsFile || '/data/settings.json'));
     }
     function load() {
@@ -164,11 +186,11 @@
       fetch('/api/settings', {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ checkOnly: only.value, checkCron: cron.value })
+        body: JSON.stringify({ checkOnly: only.value, checkCron: cron.value, checkCronOthers: cronOthers.value })
       }).then(function (r) { return r.json(); }).then(function (j) {
         if (j && (j.code === 0 || j.code === 200)) {
           render((j.data) || {});
-          msg.textContent = '✓ 已保存并生效（周期已重挂，白名单已立即跑一轮）';
+          msg.textContent = '✓ 已保存并生效（两档周期都已重挂，并立即各跑了一轮）';
           msg.style.color = 'var(--dc-ok)';
         } else {
           msg.textContent = '✗ ' + ((j && j.msg) || '保存失败');
