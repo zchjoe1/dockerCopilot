@@ -295,9 +295,10 @@
         right.appendChild(bar);
         var bSave = el('button', S.btn, '保存');
         var bCheck = el('button', S.btn2, '语法校验');
+        var bPull = el('button', S.btn2, '拉取镜像');
         var bUp = el('button', S.btn2, '一键生效');
         var bDown = el('button', S.btn2 + ';color:#b91c1c;border-color:#fca5a5', '停止并删除');
-        [bSave, bCheck, bUp, bDown].forEach(function (b) { b.disabled = true; bar.appendChild(b); });
+        [bSave, bCheck, bPull, bUp, bDown].forEach(function (b) { b.disabled = true; bar.appendChild(b); });
 
         var out = el('pre', 'margin:12px 0 0;padding:12px;background:#0f172a;color:#e2e8f0;border-radius:8px;font-size:12px;line-height:1.6;max-height:280px;overflow:auto;white-space:pre-wrap;word-break:break-all;display:none');
         right.appendChild(out);
@@ -335,7 +336,7 @@
               path.textContent = j.data.project.configFile;
               markDirty(false);
               out.style.display = 'none';
-              [bSave, bCheck, bUp, bDown].forEach(function (b) { b.disabled = false; });
+              [bSave, bCheck, bPull, bUp, bDown].forEach(function (b) { b.disabled = false; });
               setMsg('已载入 ' + name);
             })
             .catch(function () { setMsg('✗ 读取失败', '#dc2626'); });
@@ -407,6 +408,7 @@
 
         bSave.onclick = save;
         bCheck.onclick = function () { apply('config', '语法校验'); };
+        bPull.onclick = function () { apply('pull', '拉取镜像'); };
         bUp.onclick = function () { apply('up', '一键生效'); };
         bDown.onclick = function () {
           if (!window.confirm('会停止并删除「' + current + '」的容器，确定吗？')) return;
@@ -416,8 +418,10 @@
 
         right.appendChild(note(
           '「一键生效」等价于在项目目录里执行 docker compose -p <项目名> up -d --remove-orphans。' +
-          '如果 compose 里引用了本地还没有的镜像，会卡在拉取上（飞牛当前的镜像拉取本身有问题），' +
-          '下面会打印完整命令输出。'));
+          '要更新镜像：先点「拉取镜像」（docker compose pull），再点「一键生效」——' +
+          '顺序反了的话 compose 发现本地已有同名镜像就不会重建。' +
+          '拉取走的是 compose 二进制直连 Docker daemon，不受飞牛 App 层' +
+          '「镜像已存在就报 errno 52428822」那层检查影响。下面会打印完整命令输出。'));
 
         loadList();
       };

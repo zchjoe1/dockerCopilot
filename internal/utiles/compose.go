@@ -219,6 +219,11 @@ func ApplyCompose(name, action string) (string, error) {
 		args = []string{"-p", name, "-f", cfg, "down"}
 	case "restart":
 		args = []string{"-p", name, "-f", cfg, "restart"}
+	case "pull":
+		// 拉取镜像。关键：这里走 compose 二进制 → Docker daemon 直连，
+		// 绕开了飞牛 App 层 imagePull「镜像已存在就报 errno 52428822」那层检查，
+		// 所以本地已有 :latest 也能重新拉到最新的。更新镜像靠这个。
+		args = []string{"-p", name, "-f", cfg, "pull"}
 	case "config":
 		// 只校验 + 展开，不动容器，适合保存前自检。
 		args = []string{"-p", name, "-f", cfg, "config"}
