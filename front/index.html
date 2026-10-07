@@ -53,5 +53,176 @@
       }).catch(function () { show(); });
     })();
     </script>
+    <!-- 设置页（本地新增）：把关于页组件 mw 的挂载点画成设置界面 -->
+    <script>
+/* ── 设置页（本地新增 2026-10-07）──────────────────────────────────────
+   为什么用原生 DOM 而不是 React：
+   前端是上游的压缩产物、没有 sourcemap，无法重新编译。React 那边只做了
+   两处最小补丁（导航标签「关于」→「设置」、关于页组件 mw 换成挂载点），
+   实际界面在这里用原生 DOM 画，挂到 mw 给出的 ref 容器里。
+   样式全部内联：应用用的是编译期 Tailwind，未出现在源码里的类名不会有对应 CSS。 */
+(function () {
+  if (window.__dcMountSettings) return;
+  var S = {
+    box: 'background:#fff;border:1px solid #e5e7eb;border-radius:12px;padding:20px;margin-bottom:16px;box-shadow:0 1px 2px rgba(0,0,0,.04)',
+    h: 'font-size:16px;font-weight:600;color:#111827;margin:0 0 4px',
+    sub: 'font-size:13px;color:#6b7280;margin:0 0 14px;line-height:1.6',
+    lab: 'display:block;font-size:13px;font-weight:600;color:#374151;margin:14px 0 6px',
+    inp: 'width:100%;box-sizing:border-box;padding:9px 12px;border:1px solid #d1d5db;border-radius:8px;font-size:13px;font-family:ui-monospace,Menlo,monospace;color:#111827;background:#fff',
+    btn: 'padding:9px 18px;border:none;border-radius:8px;background:#0ea5e9;color:#fff;font-size:13px;font-weight:600;cursor:pointer',
+    btn2: 'padding:6px 12px;border:1px solid #d1d5db;border-radius:6px;background:#fff;color:#374151;font-size:12px;cursor:pointer;margin-right:6px',
+    kv: 'display:flex;gap:12px;font-size:12px;padding:6px 0;border-bottom:1px solid #f3f4f6',
+    k: 'width:110px;color:#6b7280;flex:none',
+    v: 'color:#111827;font-family:ui-monospace,Menlo,monospace;word-break:break-all'
+  };
+  function el(tag, style, text) {
+    var e = document.createElement(tag);
+    if (style) e.setAttribute('style', style);
+    if (text != null) e.textContent = text;
+    return e;
+  }
+  function card() { return el('div', S.box); }
+
+  window.__dcMountSettings = function (root) {
+    root.innerHTML = '';
+    var wrap = el('div', 'padding:4px 8px 24px');
+    root.appendChild(wrap);
+
+    // ── 卡片一：白名单 ──────────────────────────────────────────────
+    var c1 = card();
+    c1.appendChild(el('h3', S.h, '镜像更新检测'));
+    c1.appendChild(el('p', S.sub,
+      'Docker Copilot 每隔一段时间去镜像仓库查一次有没有新版本。默认会检查全部镜像，' +
+      '每个镜像要发 2 次请求（取 token + 取清单）；Docker Hub 对匿名请求有「100 次 / 6 小时 / IP」的限制，' +
+      '所以如果检测周期很短、镜像又很多，就会被限流，反而查不出更新。' +
+      '把要关注的镜像写进下面的白名单，只查这几个，周期调多短都安全。'));
+
+    c1.appendChild(el('label', S.lab, '白名单（只检测这些镜像）'));
+    var only = el('input', S.inp);
+    only.type = 'text';
+    only.placeholder = '留空 = 检测全部镜像；多个用英文逗号分隔';
+    c1.appendChild(only);
+    c1.appendChild(el('p', 'font-size:12px;color:#9ca3af;margin:6px 0 0;line-height:1.6',
+      '填镜像名，不要带 tag。例如容器用的是 zchjoe/procurement-center:latest，这里就填 zchjoe/procurement-center。'));
+
+    var presets = el('div', 'margin-top:10px');
+    c1.appendChild(presets);
+
+    // ── 卡片二：周期 ────────────────────────────────────────────────
+    var c2 = card();
+    c2.appendChild(el('h3', S.h, '检测周期'));
+    c2.appendChild(el('p', S.sub,
+      'cron 表达式，5 段：分 时 日 月 周。默认是每小时的第 30 分查一次（上游行为）。'));
+    var cron = el('input', S.inp);
+    cron.type = 'text';
+    cron.placeholder = '例如 */5 * * * * 表示每 5 分钟';
+    c2.appendChild(cron);
+    var cronPresets = el('div', 'margin-top:10px');
+    [['每 2 分钟', '*/2 * * * *'], ['每 5 分钟', '*/5 * * * *'], ['每 15 分钟', '*/15 * * * *'],
+     ['每 30 分钟', '*/30 * * * *'], ['每小时', '0 * * * *'], ['上游默认', '30 * * * *']].forEach(function (p) {
+      var b = el('button', S.btn2, p[0]);
+      b.onclick = function () { cron.value = p[1]; };
+      cronPresets.appendChild(b);
+    });
+    c2.appendChild(cronPresets);
+
+    // ── 保存 ────────────────────────────────────────────────────────
+    var bar = el('div', 'display:flex;align-items:center;gap:12px;margin:20px 0');
+    var save = el('button', S.btn, '保存设置');
+    var msg = el('span', 'font-size:13px');
+    bar.appendChild(save); bar.appendChild(msg);
+    wrap.appendChild(c1); wrap.appendChild(c2); wrap.appendChild(bar);
+
+    // ── 卡片三：当前生效 + 版本信息 ─────────────────────────────────
+    var c3 = card();
+    c3.appendChild(el('h3', S.h, '当前生效'));
+    var info = el('div');
+    c3.appendChild(info);
+    wrap.appendChild(c3);
+
+    function kv(k, v) {
+      var r = el('div', S.kv);
+      r.appendChild(el('span', S.k, k));
+      r.appendChild(el('span', S.v, v));
+      return r;
+    }
+    function render(s) {
+      only.value = s.checkOnly || '';
+      cron.value = s.checkCron || '';
+      info.innerHTML = '';
+      info.appendChild(kv('白名单', s.effectiveOnly || '（未设置 = 全部镜像）'));
+      info.appendChild(kv('检测周期', s.effectiveCron || ''));
+      info.appendChild(kv('设置文件', s.settingsFile || '/data/settings.json'));
+    }
+    function load() {
+      fetch('/api/settings').then(function (r) { return r.json(); }).then(function (j) {
+        render((j && j.data) || {});
+      }).catch(function () { msg.textContent = '读取设置失败'; msg.style.color = '#dc2626'; });
+    }
+    save.onclick = function () {
+      msg.textContent = '保存中…'; msg.style.color = '#6b7280';
+      fetch('/api/settings', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ checkOnly: only.value, checkCron: cron.value })
+      }).then(function (r) { return r.json(); }).then(function (j) {
+        if (j && (j.code === 0 || j.code === 200)) {
+          render((j.data) || {});
+          msg.textContent = '✓ 已保存并生效（周期已重挂，白名单已立即跑一轮）';
+          msg.style.color = '#16a34a';
+        } else {
+          msg.textContent = '✗ ' + ((j && j.msg) || '保存失败');
+          msg.style.color = '#dc2626';
+        }
+      }).catch(function () { msg.textContent = '✗ 网络错误'; msg.style.color = '#dc2626'; });
+    };
+    load();
+
+    // ── 版本信息（保留原来「关于」页的内容）────────────────────────
+    var c4 = card();
+    c4.appendChild(el('h3', S.h, '版本信息'));
+    var ver = el('div');
+    c4.appendChild(ver);
+    var appVersion = window.__DC_APP_VERSION || '';
+    function vkv(k, v) { var r = el('div', S.kv); r.appendChild(el('span', S.k, k)); r.appendChild(el('span', S.v, v)); return r; }
+    fetch('/api/version?type=local').then(function (r) { return r.json(); }).then(function (j) {
+      var d = (j && j.data) || {};
+      var bv = (typeof d === 'object' ? d.version : d) || 'unknown';
+      ver.appendChild(vkv('后端版本', bv));
+      ver.appendChild(vkv('前端版本', appVersion || 'DongShu'));
+      if (d && d.buildDate) ver.appendChild(vkv('构建时间', d.buildDate));
+    }).catch(function () {
+      ver.appendChild(vkv('后端版本', '读取失败'));
+      ver.appendChild(vkv('前端版本', appVersion || 'DongShu'));
+    });
+    wrap.appendChild(c4);
+
+    // 白名单快捷按钮：从当前容器列表里取，方便直接点
+    fetch('/api/containers').then(function (r) { return r.json(); }).then(function (j) {
+      var arr = (j && j.data) || [];
+      if (!arr.length) return;
+      var seen = {}, names = [];
+      arr.forEach(function (c) {
+        var img = c.usingImage || c.createImage || '';
+        var name = String(img).split(':')[0];
+        if (name && name !== 'None' && !seen[name]) { seen[name] = 1; names.push(name); }
+      });
+      names.sort();
+      var lab = el('p', 'font-size:12px;color:#9ca3af;margin:14px 0 6px', '点击快速加入白名单：');
+      presets.appendChild(lab);
+      names.slice(0, 40).forEach(function (n) {
+        var b = el('button', S.btn2, n);
+        b.onclick = function () {
+          var cur = only.value.split(',').map(function (x) { return x.trim(); }).filter(Boolean);
+          if (cur.indexOf(n) < 0) cur.push(n);
+          only.value = cur.join(',');
+        };
+        presets.appendChild(b);
+      });
+    }).catch(function () {});
+  };
+})();
+
+    </script>
   </body>
 </html>

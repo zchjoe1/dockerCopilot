@@ -2,6 +2,7 @@ package main
 
 import (
 	"embed"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"go/types"
@@ -10,6 +11,7 @@ import (
 	"net/http"
 	"os"
 	"strings"
+	"sync"
 
 	"github.com/onlyLTY/dockerCopilot/internal/config"
 	"github.com/onlyLTY/dockerCopilot/internal/handler"
@@ -89,59 +91,26 @@ export const customImageLogos = {
 		panic(err)
 	}
 	// ── 本地修改（2026-10-07）────────────────────────────────────────────
-	// ① CHECK_ONLY：只检测指定镜像（逗号分隔，不含 tag）。
-	//    上游每轮检查【全部】镜像，每个约 2 次 registry 请求（取 token + 取 manifest）。
-	//    本机 22 个镜像 → 每轮约 44 次请求；Docker Hub 匿名限流是 100 次 manifest/6h/IP
-	//    → 单纯把周期调短会撞限流，反而查不出更新。设白名单后只查关心的那个，多快都安全。
-	// ② CHECK_CRON：检测周期。上游硬编码 "30 * * * *"（每小时 :30），
-	//    镜像推上去最多等 1 小时才被发现；且没有任何「立即检查」HTTP 端点
-	//    （GET /api/containers 返回的只是内存缓存 ctx.HubImageInfo.Data）。
-	// 两个变量都不设时，行为与上游完全一致（零变化）。
-	checkOnly := strings.TrimSpace(os.Getenv("CHECK_ONLY"))
-	var onlyNames []string
-	if checkOnly != "" {
-		for _, n := range strings.Split(checkOnly, ",") {
-			if n = strings.TrimSpace(n); n != "" {
-				onlyNames = append(onlyNames, n)
-			}
-		}
-		logx.Infof("镜像更新检测白名单 CHECK_ONLY=%q（仅检测这些镜像）", checkOnly)
-	}
-	// checkAll 统一两处调用（启动时 + 定时）的过滤逻辑，避免只改一处造成行为不一致。
-	checkAll := func() {
-		l, err := utiles.GetImagesList(ctx)
-		if err != nil {
-			logx.Errorf("panic获取镜像列表出错: %v", err)
-			panic(err)
-		}
-		if len(onlyNames) == 0 {
-			ctx.HubImageInfo.CheckUpdate(l)
-			return
-		}
-		filtered := make([]MyType.Image, 0, len(onlyNames))
-		for _, img := range l {
-			for _, n := range onlyNames {
-				if img.ImageName == n {
-					filtered = append(filtered, img)
-					break
-				}
-			}
-		}
-		logx.Infof("白名单命中 %d / %d 个镜像", len(filtered), len(l))
-		ctx.HubImageInfo.CheckUpdate(filtered)
-	}
+	// 设置来源优先级：/data/settings.json（网页「设置」页） > 环境变量 > 内置默认。
+	// 白名单每轮现读，改完下一轮即生效；周期变更由 PUT /api/settings 动态重挂定时任务，
+	// 两者都不需要重启容器。
+	//
+	// ① 白名单：上游每轮检查【全部】镜像，每个约 2 次 registry 请求（取 token + 取 manifest）。
+	//    22 个镜像 → 每轮约 44 次；Docker Hub 匿名限流 100 次 manifest/6h/IP
+	//    → 单纯调短周期会撞限流，反而查不出更新。
+	// ② 周期：上游硬编码 "30 * * * *"（每小时 :30），镜像推上去最多等 1 小时才被发现；
+	//    且没有任何「立即检查」HTTP 端点（GET /api/containers 只返回内存缓存）。
+	utiles.LoadSettings()
+	appCtx = ctx
+
 	go checkAll()
+
 	corndanmu := cron.New(cron.WithParser(cron.NewParser(
 		cron.Minute | cron.Hour | cron.Dom | cron.Month | cron.Dow,
 	)))
-	checkCron := os.Getenv("CHECK_CRON")
-	if checkCron == "" {
-		checkCron = "30 * * * *"
-	}
-	logx.Infof("镜像更新检测周期: %q（可用环境变量 CHECK_CRON 覆盖）", checkCron)
-	_, err = corndanmu.AddFunc(checkCron, checkAll)
-	if err != nil {
-		logx.Errorf("panic添加定时任务出错（CHECK_CRON=%q，请检查 cron 表达式格式）: %v", checkCron, err)
+	cronInst = corndanmu
+	if err := applyCron(); err != nil {
+		logx.Errorf("panic挂载定时任务失败: %v", err)
 		panic(err)
 	}
 	corndanmu.Start()
@@ -166,6 +135,153 @@ export const customImageLogos = {
 	logx.Info("程序版本" + config.Version)
 	server.Start()
 }
+// ── 本地新增（2026-10-07）：设置驱动的检测 ──────────────────────────
+var (
+	appCtx *svc.ServiceContext
+
+	cronMu    sync.Mutex
+	cronInst  *cron.Cron
+	cronEntry cron.EntryID
+)
+
+// effectiveCron 按「设置 > 环境变量 > 默认」解析出周期表达式。
+func effectiveCron() string {
+	if v := strings.TrimSpace(utiles.GetSettings().CheckCron); v != "" {
+		return v
+	}
+	if v := strings.TrimSpace(os.Getenv("CHECK_CRON")); v != "" {
+		return v
+	}
+	return "30 * * * *"
+}
+
+// effectiveOnly 按「设置 > 环境变量」解析出白名单原始串。
+func effectiveOnly() string {
+	if v := strings.TrimSpace(utiles.GetSettings().CheckOnly); v != "" {
+		return v
+	}
+	return strings.TrimSpace(os.Getenv("CHECK_ONLY"))
+}
+
+// applyCron 用当前生效的周期重挂定时任务（先摘旧的再挂新的）。
+// 启动时与 PUT /api/settings 之后都会调用，所以改周期不需要重启容器。
+func applyCron() error {
+	expr := effectiveCron()
+	cronMu.Lock()
+	defer cronMu.Unlock()
+	if cronInst == nil {
+		return nil
+	}
+	if cronEntry != 0 {
+		cronInst.Remove(cronEntry)
+		cronEntry = 0
+	}
+	id, err := cronInst.AddFunc(expr, checkAll)
+	if err != nil {
+		return fmt.Errorf("cron 表达式 %q 无效（需要 5 段：分 时 日 月 周）: %w", expr, err)
+	}
+	cronEntry = id
+	logx.Infof("镜像更新检测周期: %q（可在「设置」页修改，无需重启）", expr)
+	return nil
+}
+
+// checkAll 取一次镜像列表，按白名单过滤后交给检测器。启动时与每轮定时都会调用。
+func checkAll() {
+	if appCtx == nil {
+		return
+	}
+	l, err := utiles.GetImagesList(appCtx)
+	if err != nil {
+		logx.Errorf("panic获取镜像列表出错: %v", err)
+		panic(err)
+	}
+	only := utiles.SplitList(effectiveOnly())
+	if len(only) == 0 {
+		appCtx.HubImageInfo.CheckUpdate(l)
+		return
+	}
+	filtered := make([]MyType.Image, 0, len(only))
+	for _, img := range l {
+		for _, n := range only {
+			if img.ImageName == n {
+				filtered = append(filtered, img)
+				break
+			}
+		}
+	}
+	logx.Infof("白名单命中 %d / %d 个镜像", len(filtered), len(l))
+	appCtx.HubImageInfo.CheckUpdate(filtered)
+}
+
+// settingsView 是 GET /api/settings 的返回：既给出已保存的值，
+// 也给出「实际生效值」，这样界面能显示 env 兜底的结果。
+type settingsView struct {
+	CheckOnly     string `json:"checkOnly"`
+	CheckCron     string `json:"checkCron"`
+	EffectiveOnly string `json:"effectiveOnly"`
+	EffectiveCron string `json:"effectiveCron"`
+	SettingsFile  string `json:"settingsFile"`
+}
+
+func settingsGetHandler(w http.ResponseWriter, r *http.Request) {
+	s := utiles.GetSettings()
+	// 用 types.Resp 包一层：本项目的接口都是 {code,msg,data} 结构，
+	// 前端（以及其它调用方）按 j.data 取值。httpx.OkJson 是裸返回，不能用。
+	httpx.WriteJson(w, http.StatusOK, MyType.Resp{
+		Code: 200,
+		Msg:  "success",
+		Data: settingsView{
+			CheckOnly:     s.CheckOnly,
+			CheckCron:     s.CheckCron,
+			EffectiveOnly: effectiveOnly(),
+			EffectiveCron: effectiveCron(),
+			SettingsFile:  utiles.SettingsPath,
+		},
+	})
+}
+
+func settingsPutHandler(w http.ResponseWriter, r *http.Request) {
+	var body utiles.Settings
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		httpx.WriteJson(w, http.StatusOK, xhttp.BaseResponse[types.Nil]{Code: 40000, Msg: "请求体不是合法 JSON: " + err.Error()})
+		return
+	}
+	body.CheckOnly = strings.TrimSpace(body.CheckOnly)
+	body.CheckCron = strings.TrimSpace(body.CheckCron)
+
+	// 先校验 cron 再落盘，避免存进去一个永远挂不上的表达式。
+	if body.CheckCron != "" {
+		if _, err := cron.ParseStandard(body.CheckCron); err != nil {
+			httpx.WriteJson(w, http.StatusOK, xhttp.BaseResponse[types.Nil]{
+				Code: 40001,
+				Msg:  fmt.Sprintf("cron 表达式 %q 无效（需要 5 段：分 时 日 月 周，例如 */5 * * * *）: %v", body.CheckCron, err),
+			})
+			return
+		}
+	}
+	if err := utiles.SaveSettings(body); err != nil {
+		httpx.WriteJson(w, http.StatusOK, xhttp.BaseResponse[types.Nil]{Code: 50000, Msg: "写入设置失败: " + err.Error()})
+		return
+	}
+	if err := applyCron(); err != nil {
+		httpx.WriteJson(w, http.StatusOK, xhttp.BaseResponse[types.Nil]{Code: 40001, Msg: err.Error()})
+		return
+	}
+	logx.Infof("设置已更新: 白名单=%q 周期=%q", body.CheckOnly, effectiveCron())
+	go checkAll() // 改完立刻按新白名单跑一轮，不用等下一个周期
+	httpx.WriteJson(w, http.StatusOK, MyType.Resp{
+		Code: 200,
+		Msg:  "success",
+		Data: settingsView{
+			CheckOnly:     body.CheckOnly,
+			CheckCron:     body.CheckCron,
+			EffectiveOnly: effectiveOnly(),
+			EffectiveCron: effectiveCron(),
+			SettingsFile:  utiles.SettingsPath,
+		},
+	})
+}
+
 func RegisterHandlers(engine *rest.Server) {
 	frontFS, err := fs.Sub(embeddedFront, "front")
 	if err != nil {
@@ -186,6 +302,22 @@ func RegisterHandlers(engine *rest.Server) {
 				Handler: func(w http.ResponseWriter, r *http.Request) {
 					iconFileServer.ServeHTTP(w, r)
 				},
+			},
+		},
+	)
+
+	// 【本地新增 2026-10-07】设置接口：网页「设置」页读写白名单与检测周期。
+	engine.AddRoutes(
+		[]rest.Route{
+			{
+				Method:  http.MethodGet,
+				Path:    "/api/settings",
+				Handler: settingsGetHandler,
+			},
+			{
+				Method:  http.MethodPut,
+				Path:    "/api/settings",
+				Handler: settingsPutHandler,
 			},
 		},
 	)
