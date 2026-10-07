@@ -64,16 +64,16 @@
 (function () {
   if (window.__dcMountSettings) return;
   var S = {
-    box: 'background:#fff;border:1px solid #e5e7eb;border-radius:12px;padding:20px;margin-bottom:16px;box-shadow:0 1px 2px rgba(0,0,0,.04)',
-    h: 'font-size:16px;font-weight:600;color:#111827;margin:0 0 4px',
-    sub: 'font-size:13px;color:#6b7280;margin:0 0 14px;line-height:1.6',
-    lab: 'display:block;font-size:13px;font-weight:600;color:#374151;margin:14px 0 6px',
-    inp: 'width:100%;box-sizing:border-box;padding:9px 12px;border:1px solid #d1d5db;border-radius:8px;font-size:13px;font-family:ui-monospace,Menlo,monospace;color:#111827;background:#fff',
+    box: 'background:var(--dc-card);border:1px solid var(--dc-bd);border-radius:12px;padding:20px;margin-bottom:16px;box-shadow:var(--dc-shadow)',
+    h: 'font-size:16px;font-weight:600;color:var(--dc-fg);margin:0 0 4px',
+    sub: 'font-size:13px;color:var(--dc-sub);margin:0 0 14px;line-height:1.6',
+    lab: 'display:block;font-size:13px;font-weight:600;color:var(--dc-lab);margin:14px 0 6px',
+    inp: 'width:100%;box-sizing:border-box;padding:9px 12px;border:1px solid var(--dc-inp-bd);border-radius:8px;font-size:13px;font-family:ui-monospace,Menlo,monospace;color:var(--dc-fg);background:var(--dc-inp)',
     btn: 'padding:9px 18px;border:none;border-radius:8px;background:#0ea5e9;color:#fff;font-size:13px;font-weight:600;cursor:pointer',
-    btn2: 'padding:6px 12px;border:1px solid #d1d5db;border-radius:6px;background:#fff;color:#374151;font-size:12px;cursor:pointer;margin-right:6px',
-    kv: 'display:flex;gap:12px;font-size:12px;padding:6px 0;border-bottom:1px solid #f3f4f6',
-    k: 'width:110px;color:#6b7280;flex:none',
-    v: 'color:#111827;font-family:ui-monospace,Menlo,monospace;word-break:break-all'
+    btn2: 'padding:6px 12px;border:1px solid var(--dc-inp-bd);border-radius:6px;background:var(--dc-btn2-bg);color:var(--dc-btn2-fg);font-size:12px;cursor:pointer;margin-right:6px',
+    kv: 'display:flex;gap:12px;font-size:12px;padding:6px 0;border-bottom:1px solid var(--dc-div)',
+    k: 'width:110px;color:var(--dc-sub);flex:none',
+    v: 'color:var(--dc-fg);font-family:ui-monospace,Menlo,monospace;word-break:break-all'
   };
   function el(tag, style, text) {
     var e = document.createElement(tag);
@@ -102,7 +102,7 @@
     only.type = 'text';
     only.placeholder = '留空 = 检测全部镜像；多个用英文逗号分隔';
     c1.appendChild(only);
-    c1.appendChild(el('p', 'font-size:12px;color:#9ca3af;margin:6px 0 0;line-height:1.6',
+    c1.appendChild(el('p', 'font-size:12px;color:var(--dc-faint);margin:6px 0 0;line-height:1.6',
       '填镜像名，不要带 tag。例如容器用的是 zchjoe/procurement-center:latest，这里就填 zchjoe/procurement-center。'));
 
     var presets = el('div', 'margin-top:10px');
@@ -157,10 +157,10 @@
     function load() {
       fetch('/api/settings').then(function (r) { return r.json(); }).then(function (j) {
         render((j && j.data) || {});
-      }).catch(function () { msg.textContent = '读取设置失败'; msg.style.color = '#dc2626'; });
+      }).catch(function () { msg.textContent = '读取设置失败'; msg.style.color = 'var(--dc-err)'; });
     }
     save.onclick = function () {
-      msg.textContent = '保存中…'; msg.style.color = '#6b7280';
+      msg.textContent = '保存中…'; msg.style.color = 'var(--dc-sub)';
       fetch('/api/settings', {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
@@ -169,12 +169,12 @@
         if (j && (j.code === 0 || j.code === 200)) {
           render((j.data) || {});
           msg.textContent = '✓ 已保存并生效（周期已重挂，白名单已立即跑一轮）';
-          msg.style.color = '#16a34a';
+          msg.style.color = 'var(--dc-ok)';
         } else {
           msg.textContent = '✗ ' + ((j && j.msg) || '保存失败');
-          msg.style.color = '#dc2626';
+          msg.style.color = 'var(--dc-err)';
         }
-      }).catch(function () { msg.textContent = '✗ 网络错误'; msg.style.color = '#dc2626'; });
+      }).catch(function () { msg.textContent = '✗ 网络错误'; msg.style.color = 'var(--dc-err)'; });
     };
     load();
 
@@ -208,7 +208,7 @@
         if (name && name !== 'None' && !seen[name]) { seen[name] = 1; names.push(name); }
       });
       names.sort();
-      var lab = el('p', 'font-size:12px;color:#9ca3af;margin:14px 0 6px', '点击快速加入白名单：');
+      var lab = el('p', 'font-size:12px;color:var(--dc-faint);margin:14px 0 6px', '点击快速加入白名单：');
       presets.appendChild(lab);
       names.slice(0, 40).forEach(function (n) {
         var b = el('button', S.btn2, n);
@@ -225,6 +225,32 @@
 
     </script>
       <style>
+    /* 【本地新增 2026-10-07】注入页面（设置 / Compose）的颜色变量。
+       为什么用变量而不是直接写颜色：这两个页面全用内联样式，
+       而内联样式优先级高于样式表 —— .dark 里的规则覆盖不掉内联的 #fff。
+       但内联样式【可以引用 var()】，变量值随 .dark 切换，就等于跟着换肤了。
+       应用切主题的方式：给 <html> 加/去 `dark` 类，偏好存 localStorage.docker_copilot_theme。 */
+    :root {
+      --dc-card:#ffffff; --dc-bd:#e5e7eb; --dc-fg:#111827; --dc-sub:#6b7280;
+      --dc-faint:#9ca3af; --dc-lab:#374151; --dc-inp:#ffffff; --dc-inp-bd:#d1d5db;
+      --dc-code:#fafafa; --dc-btn2-bg:#ffffff; --dc-btn2-fg:#374151;
+      --dc-hover:#f3f4f6; --dc-div:#f3f4f6;
+      --dc-out-bg:#0f172a; --dc-out-fg:#e2e8f0;
+      --dc-ok:#16a34a; --dc-err:#dc2626; --dc-warn:#b45309;
+      --dc-danger-fg:#b91c1c; --dc-danger-bd:#fca5a5;
+      --dc-shadow:0 1px 2px rgba(0,0,0,.04);
+    }
+    .dark {
+      --dc-card:#1f2937; --dc-bd:#374151; --dc-fg:#f3f4f6; --dc-sub:#9ca3af;
+      --dc-faint:#6b7280; --dc-lab:#d1d5db; --dc-inp:#111827; --dc-inp-bd:#4b5563;
+      --dc-code:#0b1220; --dc-btn2-bg:#1f2937; --dc-btn2-fg:#d1d5db;
+      --dc-hover:#374151; --dc-div:#374151;
+      --dc-out-bg:#020617; --dc-out-fg:#cbd5e1;
+      --dc-ok:#4ade80; --dc-err:#f87171; --dc-warn:#fbbf24;
+      --dc-danger-fg:#fca5a5; --dc-danger-bd:#7f1d1d;
+      --dc-shadow:none;
+    }
+
     /* 【本地新增 2026-10-07】Compose 页面的响应式布局。
        只放「随屏幕变化」的属性（宽度/最小宽度/高度/排列方向）；
        颜色边框等仍走内联样式，改动最小。
@@ -258,11 +284,11 @@
     (function () {
       if (window.__dcMountCompose) return;
       var S = {
-        box: 'background:#fff;border:1px solid #e5e7eb;border-radius:12px;padding:18px;box-shadow:0 1px 2px rgba(0,0,0,.04)',
-        h: 'font-size:15px;font-weight:600;color:#111827;margin:0 0 10px',
+        box: 'background:var(--dc-card);border:1px solid var(--dc-bd);border-radius:12px;padding:18px;box-shadow:var(--dc-shadow)',
+        h: 'font-size:15px;font-weight:600;color:var(--dc-fg);margin:0 0 10px',
         btn: 'padding:8px 16px;border:none;border-radius:8px;background:#0ea5e9;color:#fff;font-size:13px;font-weight:600;cursor:pointer',
-        btn2: 'padding:8px 14px;border:1px solid #d1d5db;border-radius:8px;background:#fff;color:#374151;font-size:13px;cursor:pointer',
-        inp: 'width:100%;box-sizing:border-box;padding:10px 12px;border:1px solid #d1d5db;border-radius:8px;font-size:12.5px;line-height:1.6;font-family:ui-monospace,Menlo,Consolas,monospace;color:#111827;background:#fafafa;resize:vertical'
+        btn2: 'padding:8px 14px;border:1px solid var(--dc-inp-bd);border-radius:8px;background:var(--dc-btn2-bg);color:var(--dc-btn2-fg);font-size:13px;cursor:pointer',
+        inp: 'width:100%;box-sizing:border-box;padding:10px 12px;border:1px solid var(--dc-inp-bd);border-radius:8px;font-size:12.5px;line-height:1.6;font-family:ui-monospace,Menlo,Consolas,monospace;color:var(--dc-fg);background:var(--dc-code);resize:vertical'
       };
       function el(tag, style, text) {
         var e = document.createElement(tag);
@@ -272,7 +298,7 @@
       }
       function card() { return el('div', S.box); }
       function note(text, color) {
-        return el('div', 'font-size:12px;color:' + (color || '#6b7280') + ';margin-top:8px;line-height:1.6', text);
+        return el('div', 'font-size:12px;color:' + (color || 'var(--dc-sub)') + ';margin-top:8px;line-height:1.6', text);
       }
 
       window.__dcMountCompose = function (root) {
@@ -282,8 +308,8 @@
         root.appendChild(wrap);
 
         var head = el('div', 'margin-bottom:12px');
-        head.appendChild(el('h2', 'font-size:20px;font-weight:700;color:#111827;margin:0 0 4px', 'Compose 项目管理'));
-        head.appendChild(el('p', 'font-size:13px;color:#6b7280;margin:0',
+        head.appendChild(el('h2', 'font-size:20px;font-weight:700;color:var(--dc-fg);margin:0 0 4px', 'Compose 项目管理'));
+        head.appendChild(el('p', 'font-size:13px;color:var(--dc-sub);margin:0',
           '直接读取和编辑飞牛的 compose 文件，改完可以一键生效（docker compose up -d）。保存时会自动备份旧文件。'));
         wrap.appendChild(head);
 
@@ -314,7 +340,7 @@
         // ── 右：编辑器 ──────────────────────────────────────────────
         var title = el('h3', S.h, '未选择项目');
         right.appendChild(title);
-        var path = el('div', 'font-size:11px;color:#9ca3af;font-family:ui-monospace,Menlo,monospace;margin:-4px 0 10px;word-break:break-all');
+        var path = el('div', 'font-size:11px;color:var(--dc-faint);font-family:ui-monospace,Menlo,monospace;margin:-4px 0 10px;word-break:break-all');
         right.appendChild(path);
 
         var ta = document.createElement('textarea');
@@ -330,16 +356,16 @@
         var bCheck = el('button', S.btn2, '语法校验');
         var bPull = el('button', S.btn2, '拉取镜像');
         var bUp = el('button', S.btn2, '一键生效');
-        var bDown = el('button', S.btn2 + ';color:#b91c1c;border-color:#fca5a5', '停止并删除');
+        var bDown = el('button', S.btn2 + ';color:var(--dc-danger-fg);border-color:var(--dc-danger-bd)', '停止并删除');
         [bSave, bCheck, bPull, bUp, bDown].forEach(function (b) { b.disabled = true; bar.appendChild(b); });
 
-        var out = el('pre', 'margin:12px 0 0;padding:12px;background:#0f172a;color:#e2e8f0;border-radius:8px;font-size:12px;line-height:1.6;max-height:280px;overflow:auto;white-space:pre-wrap;word-break:break-all;display:none');
+        var out = el('pre', 'margin:12px 0 0;padding:12px;background:var(--dc-out-bg);color:var(--dc-out-fg);border-radius:8px;font-size:12px;line-height:1.6;max-height:280px;overflow:auto;white-space:pre-wrap;word-break:break-all;display:none');
         right.appendChild(out);
 
         var dirty = false;
         var current = null;
 
-        function setMsg(t, color) { msg.textContent = t || ''; msg.style.color = color || '#6b7280'; }
+        function setMsg(t, color) { msg.textContent = t || ''; msg.style.color = color || 'var(--dc-sub)'; }
         function showOut(t) {
           out.style.display = 'block';
           out.textContent = t || '(无输出)';
@@ -362,7 +388,7 @@
           fetch('/api/compose/file?name=' + encodeURIComponent(name))
             .then(function (r) { return r.json(); })
             .then(function (j) {
-              if (j.code !== 200) { setMsg('✗ ' + j.msg, '#dc2626'); return; }
+              if (j.code !== 200) { setMsg('✗ ' + j.msg, 'var(--dc-err)'); return; }
               current = name;
               ta.disabled = false;
               ta.value = j.data.content;
@@ -372,7 +398,7 @@
               [bSave, bCheck, bPull, bUp, bDown].forEach(function (b) { b.disabled = false; });
               setMsg('已载入 ' + name);
             })
-            .catch(function () { setMsg('✗ 读取失败', '#dc2626'); });
+            .catch(function () { setMsg('✗ 读取失败', 'var(--dc-err)'); });
         }
 
         function renderList(data) {
@@ -380,17 +406,17 @@
           var ps = data.projects || [];
           if (!data.available) {
             list.appendChild(note('容器里找不到 compose 二进制：' + data.bin +
-              '。需要把它上传到挂载目录（见下方说明）。', '#b45309'));
+              '。需要把它上传到挂载目录（见下方说明）。', 'var(--dc-warn)'));
           }
           if (!ps.length) {
             list.appendChild(note('没有发现 compose 项目（扫描目录：' + data.root + '）'));
             return;
           }
           ps.forEach(function (p) {
-            var item = el('div', 'padding:9px 10px;border-radius:8px;cursor:pointer;font-size:13px;color:#111827;margin-bottom:4px;border:1px solid transparent');
+            var item = el('div', 'padding:9px 10px;border-radius:8px;cursor:pointer;font-size:13px;color:var(--dc-fg);margin-bottom:4px;border:1px solid transparent');
             item.className = 'dc-cmp-item';
             item.textContent = p.name;
-            item.onmouseenter = function () { item.style.background = '#f3f4f6'; };
+            item.onmouseenter = function () { item.style.background = 'var(--dc-hover)'; };
             item.onmouseleave = function () { item.style.background = ''; };
             item.onclick = function () { open(p.name); };
             list.appendChild(item);
@@ -403,10 +429,10 @@
           fetch('/api/compose')
             .then(function (r) { return r.json(); })
             .then(function (j) {
-              if (j.code !== 200) { setMsg('✗ ' + j.msg, '#dc2626'); return; }
+              if (j.code !== 200) { setMsg('✗ ' + j.msg, 'var(--dc-err)'); return; }
               renderList(j.data);
             })
-            .catch(function () { setMsg('✗ 加载失败', '#dc2626'); });
+            .catch(function () { setMsg('✗ 加载失败', 'var(--dc-err)'); });
         }
 
         function save() {
@@ -417,10 +443,10 @@
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ name: current, content: ta.value })
           }).then(function (r) { return r.json(); }).then(function (j) {
-            if (j.code !== 200) { setMsg('✗ ' + j.msg, '#dc2626'); return; }
+            if (j.code !== 200) { setMsg('✗ ' + j.msg, 'var(--dc-err)'); return; }
             markDirty(false);
-            setMsg('✓ 已保存' + (j.data && j.data.backup ? '，备份：' + j.data.backup : ''), '#16a34a');
-          }).catch(function () { setMsg('✗ 保存失败', '#dc2626'); });
+            setMsg('✓ 已保存' + (j.data && j.data.backup ? '，备份：' + j.data.backup : ''), 'var(--dc-ok)');
+          }).catch(function () { setMsg('✗ 保存失败', 'var(--dc-err)'); });
         }
 
         function apply(action, label) {
@@ -435,9 +461,9 @@
             body: JSON.stringify({ name: current, action: action })
           }).then(function (r) { return r.json(); }).then(function (j) {
             showOut(j.data && j.data.output);
-            if (j.code === 200) setMsg('✓ ' + label + '完成', '#16a34a');
-            else setMsg('✗ ' + j.msg, '#dc2626');
-          }).catch(function () { showOut('网络错误'); setMsg('✗ 请求失败', '#dc2626'); });
+            if (j.code === 200) setMsg('✓ ' + label + '完成', 'var(--dc-ok)');
+            else setMsg('✗ ' + j.msg, 'var(--dc-err)');
+          }).catch(function () { showOut('网络错误'); setMsg('✗ 请求失败', 'var(--dc-err)'); });
         }
 
         bSave.onclick = save;
