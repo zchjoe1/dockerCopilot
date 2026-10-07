@@ -224,7 +224,34 @@
 })();
 
     </script>
-      <!-- 【本地新增 2026-10-07】飞牛 compose 项目管理页。
+      <style>
+    /* 【本地新增 2026-10-07】Compose 页面的响应式布局。
+       只放「随屏幕变化」的属性（宽度/最小宽度/高度/排列方向）；
+       颜色边框等仍走内联样式，改动最小。
+       注意：内联样式优先级高于样式表，媒体查询覆盖不了内联值，
+       所以这些属性必须从内联挪到这里。 */
+    .dc-cmp-wrap  { padding: 4px 8px 24px; }
+    .dc-cmp-grid  { display: flex; gap: 16px; align-items: flex-start; flex-wrap: wrap; }
+    .dc-cmp-left  { width: 250px; flex: none; max-height: 72vh; overflow: auto; }
+    .dc-cmp-right { flex: 1; min-width: 420px; }
+    .dc-cmp-ta    { min-height: 360px; }
+    .dc-cmp-list  { display: block; }
+
+    /* 手机：竖排；项目列表压成一条可横向滑动的标签栏；编辑器占满宽度 */
+    @media (max-width: 768px) {
+      .dc-cmp-wrap  { padding: 4px 4px 96px; }   /* 底部让开固定导航栏 */
+      .dc-cmp-grid  { flex-direction: column; gap: 12px; }
+      .dc-cmp-left  { width: 100%; max-height: none; overflow: visible; }
+      .dc-cmp-right { width: 100%; min-width: 0; }
+      .dc-cmp-ta    { min-height: 46vh; }
+      .dc-cmp-list  { display: flex; flex-wrap: nowrap; overflow-x: auto;
+                      gap: 8px; padding-bottom: 6px; -webkit-overflow-scrolling: touch; }
+      .dc-cmp-item  { flex: none; white-space: nowrap; margin-bottom: 0;
+                      border: 1px solid #e5e7eb; }
+      .dc-cmp-note  { font-size: 11.5px; }
+    }
+    </style>
+    <!-- 【本地新增 2026-10-07】飞牛 compose 项目管理页。
          和设置页同样的做法：原生 DOM + 全内联样式。
          应用是编译期 Tailwind，没出现在原源码里的类名不会有对应 CSS，所以不用 class。 -->
     <script>
@@ -250,7 +277,8 @@
 
       window.__dcMountCompose = function (root) {
         root.innerHTML = '';
-        var wrap = el('div', 'padding:4px 8px 24px');
+        var wrap = el('div', '');
+        wrap.className = 'dc-cmp-wrap';
         root.appendChild(wrap);
 
         var head = el('div', 'margin-bottom:12px');
@@ -262,19 +290,23 @@
         var msg = el('div', 'font-size:13px;min-height:20px;margin-bottom:10px');
         wrap.appendChild(msg);
 
-        var grid = el('div', 'display:flex;gap:16px;align-items:flex-start;flex-wrap:wrap');
+        var grid = el('div', '');
+        grid.className = 'dc-cmp-grid';
         wrap.appendChild(grid);
 
         var left = card();
-        left.setAttribute('style', S.box + ';width:250px;flex:none;max-height:72vh;overflow:auto');
+        left.className = 'dc-cmp-left';
+        left.setAttribute('style', S.box);
         var right = card();
-        right.setAttribute('style', S.box + ';flex:1;min-width:420px');
+        right.className = 'dc-cmp-right';
+        right.setAttribute('style', S.box);
         grid.appendChild(left);
         grid.appendChild(right);
 
         // ── 左：项目列表 ────────────────────────────────────────────
         left.appendChild(el('h3', S.h, '项目'));
         var list = el('div');
+        list.className = 'dc-cmp-list';
         left.appendChild(list);
         var refresh = el('button', S.btn2 + ';margin-top:12px;width:100%', '刷新列表');
         left.appendChild(refresh);
@@ -286,7 +318,8 @@
         right.appendChild(path);
 
         var ta = document.createElement('textarea');
-        ta.setAttribute('style', S.inp + ';min-height:360px');
+        ta.className = 'dc-cmp-ta';
+        ta.setAttribute('style', S.inp);
         ta.spellcheck = false;
         ta.disabled = true;
         right.appendChild(ta);
@@ -355,6 +388,7 @@
           }
           ps.forEach(function (p) {
             var item = el('div', 'padding:9px 10px;border-radius:8px;cursor:pointer;font-size:13px;color:#111827;margin-bottom:4px;border:1px solid transparent');
+            item.className = 'dc-cmp-item';
             item.textContent = p.name;
             item.onmouseenter = function () { item.style.background = '#f3f4f6'; };
             item.onmouseleave = function () { item.style.background = ''; };
@@ -416,12 +450,14 @@
         };
         refresh.onclick = loadList;
 
-        right.appendChild(note(
+        var noteEl = note(
           '「一键生效」等价于在项目目录里执行 docker compose -p <项目名> up -d --remove-orphans。' +
           '要更新镜像：先点「拉取镜像」（docker compose pull），再点「一键生效」——' +
           '顺序反了的话 compose 发现本地已有同名镜像就不会重建。' +
           '拉取走的是 compose 二进制直连 Docker daemon，不受飞牛 App 层' +
-          '「镜像已存在就报 errno 52428822」那层检查影响。下面会打印完整命令输出。'));
+          '「镜像已存在就报 errno 52428822」那层检查影响。下面会打印完整命令输出。');
+        noteEl.className = 'dc-cmp-note';
+        right.appendChild(noteEl);
 
         loadList();
       };
