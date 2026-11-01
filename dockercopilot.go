@@ -14,7 +14,7 @@ import (
 	"github.com/onlyLTY/dockerCopilot/internal/config"
 	"github.com/onlyLTY/dockerCopilot/internal/handler"
 	"github.com/onlyLTY/dockerCopilot/internal/svc"
-	"github.com/onlyLTY/dockerCopilot/internal/types"
+	dctypes "github.com/onlyLTY/dockerCopilot/internal/types"
 	"github.com/onlyLTY/dockerCopilot/internal/utiles"
 	"github.com/robfig/cron/v3"
 	"github.com/zeromicro/go-zero/core/conf"
@@ -246,11 +246,11 @@ func parseCheckOnly(raw string) []string {
 
 // filterImages 按 CHECK_ONLY 过滤镜像列表（子串匹配 ImageName，写 zchjoe/nc-bridge 即可命中 tag 形式）。
 // checkOnly 为空时原样返回。
-func filterImages(list []types.Image, checkOnly []string) []types.Image {
+func filterImages(list []dctypes.Image, checkOnly []string) []dctypes.Image {
 	if len(checkOnly) == 0 {
 		return list
 	}
-	out := make([]types.Image, 0, len(list))
+	out := make([]dctypes.Image, 0, len(list))
 	for _, img := range list {
 		for _, want := range checkOnly {
 			if strings.Contains(img.ImageName, want) {
