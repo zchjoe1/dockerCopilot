@@ -52,11 +52,18 @@ func (i *ImageUpdateData) CheckUpdate(imageList []types.Image) {
 func (i *ImageUpdateData) checkSingleImage(image types.Image) {
 	// 2026-11-01：带上私有仓凭据。原来传 "" ⇒ 私有仓（如 zchjoe/nc-bridge）匿名 HEAD 必 401。
 	auth, authSource := AuthForWithSource(image.ImageName)
-	token, err := GetToken(image, auth)
+	direct := auth != "" // 有凭据 ⇒ 私有仓，必须直连官方 registry（加速站没有私有镜像）
+	var token string
+	var err error
+	if direct {
+		token, err = GetTokenDirect(image, auth)
+	} else {
+		token, err = GetToken(image, auth)
+	}
 	if err != nil {
 		logx.Error("获取token失败或者无需获取token，继续尝试检查" + err.Error())
 	}
-	digestURL, err := BuildManifestURL(image)
+	digestURL, err := BuildManifestURLEx(image, direct)
 	if err != nil {
 		logx.Error("获取digestURL失败" + err.Error())
 		i.markCheck(image.ID, "error", "构建 manifest 地址失败："+err.Error())
@@ -113,7 +120,11 @@ func (i *ImageUpdateData) markCheck(imageID, status, errMsg string) {
 	}
 }
 
-func BuildManifestURL(image types.Image) (string, error) {
+func BuildManifestURL(image types.Image) (string, error) { return BuildManifestURLEx(image, false) }
+
+// BuildManifestURLEx 增加 direct：true = 直连官方 registry（不走加速站）。
+// 私有镜像必须 direct —— 加速站（docker.1ms.run 等）只镜像公开镜像，对私有仓直接 401。
+func BuildManifestURLEx(image types.Image, direct bool) (string, error) {
 	normalizedRef, err := ref.ParseDockerRef(image.ImageName + ":" + image.ImageTag)
 	if err != nil {
 		return "", err
@@ -123,11 +134,17 @@ func BuildManifestURL(image types.Image) (string, error) {
 		return "", errors.New("镜像无tag" + normalizedRef.String())
 	}
 
-	host, ErrGetRegistryAddress := GetRegistryAddress(normalizedTaggedRef.Name())
 	img, tag := ref.Path(normalizedTaggedRef), normalizedTaggedRef.Tag()
 
-	if ErrGetRegistryAddress != nil {
-		return "", ErrGetRegistryAddress
+	var host string
+	if direct {
+		host = CanonicalRegistryHost(image.ImageName)
+	} else {
+		h, err := GetRegistryAddress(normalizedTaggedRef.Name())
+		if err != nil {
+			return "", err
+		}
+		host = h
 	}
 
 	url := url2.URL{

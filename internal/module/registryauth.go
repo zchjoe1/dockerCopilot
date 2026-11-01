@@ -138,3 +138,30 @@ func lookupAuth(cfg *dockerConfigFile, registry string) (string, bool) {
 	}
 	return "", false
 }
+
+// ===== 2026-11-01（补）：私有镜像必须直连官方 registry，不能走加速站 =====
+//
+// 现场：dc 有一条加速站候选表（docker.1ms.run 等），checkHost() 探到哪个通用哪个。
+// 但加速站只镜像**公开**镜像 —— 私有仓在它上面根本不存在，于是：
+//
+//	HEAD https://docker.1ms.run/v2/zchjoe/nc-bridge/manifests/latest
+//	→ 401（realm 指向 docker.1ms.run 自己的 token 端点，也拿不到我们的仓库）
+//
+// 结果就是：明明挂好了 docker 凭据，私有镜像仍然永远检测不到更新。
+// 所以只要这个镜像**有凭据**，寻址一律走官方 registry。
+
+// CanonicalRegistryHost 返回镜像所属 registry 的**官方**主机名（不走加速站）。
+// Docker Hub 用 registry-1.docker.io（index.docker.io 亦可）。
+func CanonicalRegistryHost(imageName string) string {
+	reg := registryOf(imageName)
+	if reg == "docker.io" {
+		return "registry-1.docker.io"
+	}
+	return reg
+}
+
+// HasCredentials 表示该镜像所属 registry 有可用凭据（决定是否直连官方 registry）。
+func HasCredentials(imageName string) bool {
+	auth, _ := AuthForWithSource(imageName)
+	return auth != ""
+}

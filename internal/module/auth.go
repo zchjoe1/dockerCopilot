@@ -208,3 +208,36 @@ func checkHost(host string) bool {
 	logx.Errorf("Failed to connect to %s: %s", URL, resp.Status)
 	return false
 }
+
+// GetTokenDirect 与 GetToken 相同，但**挑战地址固定走官方 registry**（不走加速站）。
+// 为什么需要（2026-11-01，实测）：私有镜像在加速站（docker.1ms.run 等）上不存在，
+// 拿到的挑战 realm 也是加速站自己的 token 端点 ⇒ 即使挂好凭据也永远 401。
+// 只要该镜像有凭据，token 必须向官方 registry 要。
+func GetTokenDirect(image types.Image, registryAuth string) (string, error) {
+	normalizedRef, err := ref.ParseNormalizedNamed(image.ImageName)
+	if err != nil {
+		return "", err
+	}
+	challengeURL := url.URL{Scheme: "https", Host: CanonicalRegistryHost(image.ImageName), Path: "/v2/"}
+	req, err := GetChallengeRequest(challengeURL)
+	if err != nil {
+		return "", err
+	}
+	client := &http.Client{Timeout: 20 * time.Second}
+	res, err := client.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer func(b io.ReadCloser) { _ = b.Close() }(res.Body)
+	challenge := strings.ToLower(res.Header.Get(ChallengeHeader))
+	if strings.HasPrefix(challenge, "basic") {
+		if registryAuth == "" {
+			return "", fmt.Errorf("no credentials available")
+		}
+		return fmt.Sprintf("Basic %s", registryAuth), nil
+	}
+	if strings.HasPrefix(challenge, "bearer") {
+		return GetBearerHeader(res.Header.Get(ChallengeHeader), normalizedRef, registryAuth)
+	}
+	return "", fmt.Errorf("unsupported challenge type from registry")
+}
