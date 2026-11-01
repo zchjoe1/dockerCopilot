@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	ref "github.com/distribution/reference"
+	"github.com/docker/docker/client"
 	"github.com/onlyLTY/dockerCopilot/internal/types"
 	"github.com/zeromicro/go-zero/core/logx"
 	"io"
@@ -37,16 +38,16 @@ func NewImageCheck() *ImageUpdateData {
 		Data: map[string]ImageCheckList{},
 	}
 }
-func (i *ImageUpdateData) CheckUpdate(imageList []types.Image) {
+func (i *ImageUpdateData) CheckUpdate(cli *client.Client, imageList []types.Image) {
 	for _, image := range imageList {
 		if strings.Contains(image.ImageName, "0nlylty/dockercopilot") {
 			continue
 		}
-		i.checkSingleImage(image)
+		i.checkSingleImage(cli, image)
 	}
 }
 
-func (i *ImageUpdateData) checkSingleImage(image types.Image) {
+func (i *ImageUpdateData) checkSingleImage(cli *client.Client, image types.Image) {
 	// 2026-11-01：带上私有仓凭据。原来传 "" ⇒ 私有仓（如 zchjoe/nc-bridge）匿名 HEAD 必 401。
 	auth, authSource := AuthForWithSource(image.ImageName)
 	direct := auth != "" // 有凭据 ⇒ 私有仓，必须直连官方 registry（加速站没有私有镜像）
@@ -66,7 +67,18 @@ func (i *ImageUpdateData) checkSingleImage(image types.Image) {
 		i.markCheck(image.ID, "error", "构建 manifest 地址失败："+err.Error())
 		return
 	}
-	remoteDigest, err := GetDigest(digestURL, token)
+	// 优先让 daemon 去取 digest：它走自己的 registry-mirrors + 凭据，
+	// 而本机裸连 Docker Hub 是被墙的（详见 daemondigest.go 顶部注释）。
+	remoteDigest, err := "", error(nil)
+	if d, derr := DigestViaDaemon(cli, image.ImageName, image.ImageTag); derr == nil && d != "" {
+		remoteDigest, err = d, nil
+		logx.Infof("%s:%s daemon digest=%s", image.ImageName, image.ImageTag, d)
+	} else {
+		if derr != nil {
+			logx.Infof("daemon 取 digest 失败，回退 HTTP：%v", derr)
+		}
+		remoteDigest, err = GetDigest(digestURL, token)
+	}
 	if err != nil {
 		logx.Error("获取digest失败" + err.Error())
 		msg := err.Error()

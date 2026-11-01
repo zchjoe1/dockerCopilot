@@ -105,7 +105,7 @@ export const customImageLogos = {
 		logx.Errorf("panic获取镜像列表出错: %v", err)
 		panic(err)
 	}
-	go ctx.HubImageInfo.CheckUpdate(filterImages(list, checkOnly))
+	go ctx.HubImageInfo.CheckUpdate(ctx.DockerClient, filterImages(list, checkOnly))
 	corndanmu := cron.New(cron.WithParser(cron.NewParser(
 		cron.Minute | cron.Hour | cron.Dom | cron.Month | cron.Dow,
 	)))
@@ -115,7 +115,7 @@ export const customImageLogos = {
 			logx.Errorf("panic获取镜像列表出错: %v", err)
 			panic(err)
 		}
-		ctx.HubImageInfo.CheckUpdate(filterImages(list, checkOnly))
+		ctx.HubImageInfo.CheckUpdate(ctx.DockerClient, filterImages(list, checkOnly))
 	})
 	if err != nil {
 		logx.Errorf("panic添加定时任务出错: %v", err)
