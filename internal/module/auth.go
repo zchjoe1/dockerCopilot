@@ -77,7 +77,7 @@ func GetChallengeRequest(URL url.URL) (*http.Request, error) {
 }
 
 func GetBearerHeader(challenge string, imageRef ref.Named, registryAuth string) (string, error) {
-	client := http.Client{}
+	client := *registryClient(20*time.Second, false)
 	authURL, err := GetAuthURL(challenge, imageRef)
 
 	if err != nil {
@@ -183,9 +183,7 @@ func GetRegistryAddress(imageRef string) (string, error) {
 func checkHost(host string) bool {
 	URL := "https://" + host + "/v2/"
 	// 创建带有超时设置的 http.Client
-	client := http.Client{
-		Timeout: 5 * time.Second,
-	}
+	client := *registryClient(5*time.Second, false)
 	// 发送 HEAD 请求
 	resp, err := client.Get(URL)
 	if err != nil {
@@ -223,7 +221,7 @@ func GetTokenDirect(image types.Image, registryAuth string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	client := &http.Client{Timeout: 20 * time.Second}
+	client := registryClient(20*time.Second, false)
 	res, err := client.Do(req)
 	if err != nil {
 		return "", err
