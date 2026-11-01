@@ -1,18 +1,15 @@
 package module
 
 import (
-	"crypto/tls"
 	"errors"
 	"fmt"
 	ref "github.com/distribution/reference"
 	"github.com/onlyLTY/dockerCopilot/internal/types"
 	"github.com/zeromicro/go-zero/core/logx"
 	"io"
-	"net"
 	"net/http"
 	url2 "net/url"
 	"strings"
-	"time"
 )
 
 // ImageCheckList 检查更新处理后的镜像列表
@@ -156,19 +153,8 @@ func BuildManifestURLEx(image types.Image, direct bool) (string, error) {
 }
 
 func GetDigest(url string, token string) (string, error) {
-	tr := &http.Transport{
-		Proxy: http.ProxyFromEnvironment,
-		DialContext: (&net.Dialer{
-			Timeout:   30 * time.Second,
-			KeepAlive: 30 * time.Second,
-		}).DialContext,
-		ForceAttemptHTTP2:     true,
-		MaxIdleConns:          100,
-		IdleConnTimeout:       90 * time.Second,
-		TLSHandshakeTimeout:   10 * time.Second,
-		ExpectContinueTimeout: 1 * time.Second,
-		TLSClientConfig:       &tls.Config{InsecureSkipVerify: true},
-	}
+	// 强制 IPv4：本机 IPv6 到 registry 不通，双栈拨号会一直等到超时
+	tr := newIPv4Transport(true)
 	client := &http.Client{Transport: tr}
 
 	req, _ := http.NewRequest("HEAD", url, nil)

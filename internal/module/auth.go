@@ -38,7 +38,7 @@ func GetToken(image types.Image, registryAuth string) (string, error) {
 		return "", err
 	}
 
-	client := &http.Client{}
+	client := registryClient(20*time.Second, false)
 	var res *http.Response
 	if res, err = client.Do(req); err != nil {
 		return "", err
