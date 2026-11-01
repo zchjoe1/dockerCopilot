@@ -9,10 +9,12 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"strings"
 
 	"github.com/onlyLTY/dockerCopilot/internal/config"
 	"github.com/onlyLTY/dockerCopilot/internal/handler"
 	"github.com/onlyLTY/dockerCopilot/internal/svc"
+	"github.com/onlyLTY/dockerCopilot/internal/types"
 	"github.com/onlyLTY/dockerCopilot/internal/utiles"
 	"github.com/robfig/cron/v3"
 	"github.com/zeromicro/go-zero/core/conf"
@@ -80,22 +82,40 @@ export const customImageLogos = {
 		}
 	}
 
+	// 2026-11-01：把「只查关心的镜像 / 自定义检查节奏」两个开关收进仓库。
+	// 来源：NAS 上那台 dc 是**本地改过再构建**的（compose 里写着 CHECK_ONLY / CHECK_CRON），
+	// 代码从没进仓库 ⇒ 一换成 registry 里的镜像这两个变量就失效，dc 会每 30 分钟检查全部镜像
+	// （实测那台有 20+ 个镜像，Docker Hub 匿名额度会被打满，私有仓还会 401）。
+	// 所以按原行为在这里实现：
+	//   CHECK_ONLY=zchjoe/procurement-center,zchjoe/nc-bridge   ← 逗号分隔；为空 = 全查
+	//   CHECK_CRON=*/5 * * * *                                   ← 5 段标准 cron；默认 30 * * * *
+	// 匹配规则用**子串包含**：写 zchjoe/nc-bridge 也能命中 zchjoe/nc-bridge:latest。
+	checkOnly := parseCheckOnly(os.Getenv("CHECK_ONLY"))
+	checkCron := strings.TrimSpace(os.Getenv("CHECK_CRON"))
+	if checkCron == "" {
+		checkCron = "30 * * * *"
+	}
+	if len(checkOnly) > 0 {
+		logx.Infof("[checkupdate] 只检查 %d 个镜像：%s", len(checkOnly), strings.Join(checkOnly, ", "))
+	}
+	logx.Infof("[checkupdate] 检查节奏：%s", checkCron)
+
 	list, err := utiles.GetImagesList(ctx)
 	if err != nil {
 		logx.Errorf("panic获取镜像列表出错: %v", err)
 		panic(err)
 	}
-	go ctx.HubImageInfo.CheckUpdate(list)
+	go ctx.HubImageInfo.CheckUpdate(filterImages(list, checkOnly))
 	corndanmu := cron.New(cron.WithParser(cron.NewParser(
 		cron.Minute | cron.Hour | cron.Dom | cron.Month | cron.Dow,
 	)))
-	_, err = corndanmu.AddFunc("30 * * * *", func() {
+	_, err = corndanmu.AddFunc(checkCron, func() {
 		list, err := utiles.GetImagesList(ctx)
 		if err != nil {
 			logx.Errorf("panic获取镜像列表出错: %v", err)
 			panic(err)
 		}
-		ctx.HubImageInfo.CheckUpdate(list)
+		ctx.HubImageInfo.CheckUpdate(filterImages(list, checkOnly))
 	})
 	if err != nil {
 		logx.Errorf("panic添加定时任务出错: %v", err)
@@ -206,4 +226,38 @@ func SetupLog(logDir string) error {
 	logx.MustSetup(logConf)
 	logx.AddWriter(logx.NewWriter(os.Stdout))
 	return nil
+}
+
+// parseCheckOnly 解析 CHECK_ONLY（逗号分隔，去空白、去重、忽略空项）。
+// 为空表示"不限制"，即保持上游默认行为（检查全部镜像）。
+func parseCheckOnly(raw string) []string {
+	out := make([]string, 0, 4)
+	seen := map[string]bool{}
+	for _, part := range strings.Split(raw, ",") {
+		p := strings.TrimSpace(part)
+		if p == "" || seen[p] {
+			continue
+		}
+		seen[p] = true
+		out = append(out, p)
+	}
+	return out
+}
+
+// filterImages 按 CHECK_ONLY 过滤镜像列表（子串匹配 ImageName，写 zchjoe/nc-bridge 即可命中 tag 形式）。
+// checkOnly 为空时原样返回。
+func filterImages(list []types.Image, checkOnly []string) []types.Image {
+	if len(checkOnly) == 0 {
+		return list
+	}
+	out := make([]types.Image, 0, len(list))
+	for _, img := range list {
+		for _, want := range checkOnly {
+			if strings.Contains(img.ImageName, want) {
+				out = append(out, img)
+				break
+			}
+		}
+	}
+	return out
 }
