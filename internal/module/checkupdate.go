@@ -16,8 +16,18 @@ import (
 )
 
 // ImageCheckList 检查更新处理后的镜像列表
+//
+// 2026-11-01：加 Status/Err。原来只有 NeedUpdate 一个 bool，而"检查失败"（例如私有仓
+// 匿名取 manifest 被 401）是**直接 return、什么都不写** ⇒ 前端既不说"有更新"也不说"已最新"，
+// 用户看到的就是"这个镜像没有通知"。现在三类结果都落一条记录：
+//
+//	Status="update" 有更新可拉
+//	Status="ok"     已是最新
+//	Status="error"  检查失败（Err 写原因，前端/日志都能看出是缺凭据还是网络问题）
 type ImageCheckList struct {
 	NeedUpdate bool
+	Status     string
+	Err        string
 }
 type ImageUpdateData struct {
 	Data map[string]ImageCheckList
@@ -40,22 +50,35 @@ func (i *ImageUpdateData) CheckUpdate(imageList []types.Image) {
 }
 
 func (i *ImageUpdateData) checkSingleImage(image types.Image) {
-	token, err := GetToken(image, "")
+	// 2026-11-01：带上私有仓凭据。原来传 "" ⇒ 私有仓（如 zchjoe/nc-bridge）匿名 HEAD 必 401。
+	auth, authSource := AuthForWithSource(image.ImageName)
+	token, err := GetToken(image, auth)
 	if err != nil {
 		logx.Error("获取token失败或者无需获取token，继续尝试检查" + err.Error())
 	}
 	digestURL, err := BuildManifestURL(image)
 	if err != nil {
 		logx.Error("获取digestURL失败" + err.Error())
+		i.markCheck(image.ID, "error", "构建 manifest 地址失败："+err.Error())
 		return
 	}
 	remoteDigest, err := GetDigest(digestURL, token)
 	if err != nil {
 		logx.Error("获取digest失败" + err.Error())
+		msg := err.Error()
+		// 401 + 没凭据 = 私有仓没配认证。这是最可能的原因，直接把"该怎么修"写进错误里，
+		// 免得下次又要在日志里翻半天才想到挂 config.json。
+		if auth == "" && strings.Contains(msg, "401") {
+			msg += "（私有仓需要 docker 凭据：把宿主机 ~/.docker/config.json 只读挂进容器，或设置 DC_REGISTRY_AUTH）"
+		} else if auth != "" {
+			msg += "（已用凭据：来源 " + authSource + "）"
+		}
+		i.markCheck(image.ID, "error", msg)
 		return
 	}
 	if len(image.RepoDigests) == 0 {
 		logx.Error("未在本地获取到repoDigest" + image.ImageName + ":" + image.ImageTag)
+		i.markCheck(image.ID, "error", "本地没有 repoDigest（镜像可能未从 registry 拉取）")
 		return
 	}
 	needUpdate := false
@@ -74,7 +97,20 @@ func (i *ImageUpdateData) checkSingleImage(image types.Image) {
 			needUpdate = false
 		}
 	}
-	i.Data[image.ID] = ImageCheckList{NeedUpdate: needUpdate}
+	status := "ok"
+	if needUpdate {
+		status = "update"
+	}
+	i.markCheck(image.ID, status, "")
+}
+
+// markCheck 统一落一条检查结果（成功与失败都写，避免"沉默的镜像"）。
+func (i *ImageUpdateData) markCheck(imageID, status, errMsg string) {
+	i.Data[imageID] = ImageCheckList{
+		NeedUpdate: status == "update",
+		Status:     status,
+		Err:        errMsg,
+	}
 }
 
 func BuildManifestURL(image types.Image) (string, error) {
