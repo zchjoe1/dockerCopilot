@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	ref "github.com/distribution/reference"
+	"github.com/docker/docker/client"
 	"github.com/onlyLTY/dockerCopilot/internal/types"
 	"github.com/zeromicro/go-zero/core/logx"
 	"io"
@@ -15,9 +16,10 @@ import (
 	"time"
 )
 
-// ImageCheckList 检查更新处理后的镜像列表
 type ImageCheckList struct {
 	NeedUpdate bool
+	Status     string
+	Err        string
 }
 type ImageUpdateData struct {
 	Data map[string]ImageCheckList
@@ -30,26 +32,46 @@ func NewImageCheck() *ImageUpdateData {
 		Data: map[string]ImageCheckList{},
 	}
 }
-func (i *ImageUpdateData) CheckUpdate(imageList []types.Image) {
+func (i *ImageUpdateData) CheckUpdate(cli *client.Client, imageList []types.Image) {
 	for _, image := range imageList {
 		if strings.Contains(image.ImageName, "0nlylty/dockercopilot") {
 			continue
 		}
-		i.checkSingleImage(image)
+		i.checkSingleImage(cli, image)
 	}
 }
 
-func (i *ImageUpdateData) checkSingleImage(image types.Image) {
-	token, err := GetToken(image, "")
+func (i *ImageUpdateData) checkSingleImage(cli *client.Client, image types.Image) {
+	auth, authSource := AuthForWithSource(image.ImageName)
+	_ = authSource       // 仅日志用；保留变量便于以后把来源打进错误信息
+	direct := auth != "" // 有凭据 ⇒ 私有仓，必须直连官方 registry（加速站没有私有镜像）
+	var token string
+	var err error
+	if direct {
+		token, err = GetTokenDirect(image, auth)
+	} else {
+		token, err = GetToken(image, auth)
+	}
 	if err != nil {
 		logx.Error("获取token失败或者无需获取token，继续尝试检查" + err.Error())
 	}
-	digestURL, err := BuildManifestURL(image)
+	digestURL, err := BuildManifestURLEx(image, direct)
 	if err != nil {
 		logx.Error("获取digestURL失败" + err.Error())
 		return
 	}
-	remoteDigest, err := GetDigest(digestURL, token)
+	// 优先让 daemon 去取 digest：它走自己的 registry-mirrors + 凭据 + 代理
+	// （本机裸连 Docker Hub 被墙，详见 daemondigest.go 顶部注释）
+	var remoteDigest string
+	remoteDigest, err = DigestViaDaemon(cli, image.ImageName, image.ImageTag)
+	if err == nil && remoteDigest != "" {
+		logx.Infof("%s:%s daemon digest=%s", image.ImageName, image.ImageTag, remoteDigest)
+	} else {
+		if err != nil {
+			logx.Infof("daemon 取 digest 失败，回退 HTTP：%v", err)
+		}
+		remoteDigest, err = GetDigest(digestURL, token)
+	}
 	if err != nil {
 		logx.Error("获取digest失败" + err.Error())
 		return
@@ -74,10 +96,17 @@ func (i *ImageUpdateData) checkSingleImage(image types.Image) {
 			needUpdate = false
 		}
 	}
-	i.Data[image.ID] = ImageCheckList{NeedUpdate: needUpdate}
+	status := "ok"
+	if needUpdate {
+		status = "update"
+	}
+	i.markCheck(image.ID, status, "")
 }
 
-func BuildManifestURL(image types.Image) (string, error) {
+func BuildManifestURL(image types.Image) (string, error) { return BuildManifestURLEx(image, false) }
+
+// BuildManifestURLEx direct=true 时直连官方 registry（私有镜像必须，加速站没有私有仓）。
+func BuildManifestURLEx(image types.Image, direct bool) (string, error) {
 	normalizedRef, err := ref.ParseDockerRef(image.ImageName + ":" + image.ImageTag)
 	if err != nil {
 		return "", err
@@ -147,4 +176,9 @@ func GetDigest(url string, token string) (string, error) {
 		return "", fmt.Errorf("registry responded to head request with %q, auth: %q", res.Status, wwwAuthHeader)
 	}
 	return res.Header.Get(ContentDigestHeader), nil
+}
+
+// markCheck 统一落一条检查结果（成功与失败都写，避免"沉默的镜像"）。
+func (i *ImageUpdateData) markCheck(imageID, status, errMsg string) {
+	i.Data[imageID] = ImageCheckList{NeedUpdate: status == "update", Status: status, Err: errMsg}
 }

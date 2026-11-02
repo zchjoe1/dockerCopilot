@@ -38,7 +38,7 @@ func GetToken(image types.Image, registryAuth string) (string, error) {
 		return "", err
 	}
 
-	client := &http.Client{}
+	client := registryClient(20*time.Second, false)
 	var res *http.Response
 	if res, err = client.Do(req); err != nil {
 		return "", err
@@ -207,4 +207,35 @@ func checkHost(host string) bool {
 
 	logx.Errorf("Failed to connect to %s: %s", URL, resp.Status)
 	return false
+}
+
+// GetTokenDirect 与 GetToken 相同，但挑战地址固定走官方 registry（不走加速站）。
+// 私有镜像在加速站上不存在，挑战 realm 也是加速站自己的 token 端点 ⇒ 即使有凭据也 401。
+func GetTokenDirect(image types.Image, registryAuth string) (string, error) {
+	normalizedRef, err := ref.ParseNormalizedNamed(image.ImageName)
+	if err != nil {
+		return "", err
+	}
+	challengeURL := url.URL{Scheme: "https", Host: CanonicalRegistryHost(image.ImageName), Path: "/v2/"}
+	req, err := GetChallengeRequest(challengeURL)
+	if err != nil {
+		return "", err
+	}
+	client := registryClient(20*time.Second, false)
+	res, err := client.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer func(b io.ReadCloser) { _ = b.Close() }(res.Body)
+	challenge := strings.ToLower(res.Header.Get(ChallengeHeader))
+	if strings.HasPrefix(challenge, "basic") {
+		if registryAuth == "" {
+			return "", fmt.Errorf("no credentials available")
+		}
+		return fmt.Sprintf("Basic %s", registryAuth), nil
+	}
+	if strings.HasPrefix(challenge, "bearer") {
+		return GetBearerHeader(res.Header.Get(ChallengeHeader), normalizedRef, registryAuth)
+	}
+	return "", fmt.Errorf("unsupported challenge type from registry")
 }

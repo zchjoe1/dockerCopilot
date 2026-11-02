@@ -231,7 +231,7 @@ func checkAll() {
 	}
 	only := utiles.SplitList(effectiveOnly())
 	if len(only) == 0 {
-		appCtx.HubImageInfo.CheckUpdate(l)
+		appCtx.HubImageInfo.CheckUpdate(appCtx.DockerClient, l)
 		return
 	}
 	filtered := make([]MyType.Image, 0, len(only))
@@ -244,7 +244,7 @@ func checkAll() {
 		}
 	}
 	logx.Infof("快档：优先名单命中 %d / %d 个镜像", len(filtered), len(l))
-	appCtx.HubImageInfo.CheckUpdate(filtered)
+	appCtx.HubImageInfo.CheckUpdate(appCtx.DockerClient, filtered)
 }
 
 // checkOthers 是**慢档**：只查**不在**优先名单里的其余镜像（2026-10-07 新增）。
@@ -280,7 +280,7 @@ func checkOthers() {
 		return
 	}
 	logx.Infof("慢档：检查其余 %d / %d 个镜像", len(rest), len(l))
-	appCtx.HubImageInfo.CheckUpdate(rest)
+	appCtx.HubImageInfo.CheckUpdate(appCtx.DockerClient, rest)
 }
 
 // settingsView 是 GET /api/settings 的返回：既给出已保存的值，
