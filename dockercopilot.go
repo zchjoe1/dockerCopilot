@@ -503,6 +503,29 @@ func RegisterHandlers(engine *rest.Server) {
 
 	frontFileServer := http.StripPrefix("/manager", http.FileServer(http.FS(frontFS)))
 
+	// 【本地新增 2026-11-02】首页注入「自动登录」：local 分支已去掉后端密码校验，
+	// 但前端仍会先弹登录框（它只看 localStorage 里有没有 docker_copilot_token）。
+	// 这里在任何 index.html 响应前插一段脚本：没有 token 就静默换取一个再刷新 ⇒ 打开即进。
+	// 键名与前端一致（从打包产物里确认：localStorage.setItem("docker_copilot_token")），
+	// 登录接口是 POST /api/auth（multipart，字段 secretKey）。
+	injectAutoLogin := func(html []byte) []byte {
+		const marker = "docker_copilot_token"
+		if strings.Contains(string(html), marker) {
+			return html
+		}
+		snippet := "<script>\n(function(){\n  try{\n    var K=\"docker_copilot_token\";\n    if(localStorage.getItem(K)) return;\n    var fd=new FormData(); fd.append(\"secretKey\",\"\");\n    fetch(\"/api/auth\",{method:\"POST\",body:fd})\n      .then(function(r){return r.json();})\n      .then(function(d){var j=d&&d.data&&d.data.jwt; if(j){localStorage.setItem(K,j); location.reload();}})\n      .catch(function(){});\n  }catch(e){}\n})();\n</script>\n"
+		return []byte(strings.Replace(string(html), "</body>", snippet+"</body>", 1))
+	}
+	indexHandler := func(w http.ResponseWriter, r *http.Request) {
+		b, err := fs.ReadFile(frontFS, "index.html")
+		if err != nil {
+			frontFileServer.ServeHTTP(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		_, _ = w.Write(injectAutoLogin(b))
+	}
+
 	assetsHandler := http.FileServer(http.FS(frontFS))
 
 	// Serve custom icons
@@ -569,17 +592,22 @@ func RegisterHandlers(engine *rest.Server) {
 	engine.AddRoutes(
 		[]rest.Route{
 			{
-				Method: http.MethodGet,
-				Path:   "/manager",
-				Handler: func(w http.ResponseWriter, r *http.Request) {
-					frontFileServer.ServeHTTP(w, r)
-				},
+				Method:  http.MethodGet,
+				Path:    "/manager",
+				Handler: indexHandler,
 			},
 			{
 				Method: http.MethodGet,
 				Path:   "/manager/:path",
 				Handler: func(w http.ResponseWriter, r *http.Request) {
-					frontFileServer.ServeHTTP(w, r)
+					// 带扩展名的静态资源仍走文件服务；其余（SPA 路由）一律回 index 并注入自动登录
+					if idx := strings.LastIndex(r.URL.Path, "/"); idx >= 0 {
+						if strings.Contains(r.URL.Path[idx:], ".") {
+							frontFileServer.ServeHTTP(w, r)
+							return
+						}
+					}
+					indexHandler(w, r)
 				},
 			},
 			{
