@@ -5,6 +5,7 @@ on:
   push:
     branches:
       - latest
+      - agent/dsh/local-merge   # 2026-11-02：本地功能+私有仓修复的合并分支，构建同一 :latest
     paths:
       - version
 
