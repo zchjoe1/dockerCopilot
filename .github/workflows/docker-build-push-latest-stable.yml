@@ -51,7 +51,23 @@ jobs:
       - name: Checkout code back end
         uses: actions/checkout@v3
 
+      # 【2026-11-02】仓库里若已提交 front/index.html，就**用它**，不要被上游前端覆盖。
+      # 原因：本 fork 的 front/ 是定制前端（带「设置」和「Compose」页面，379KB），
+      # 而上游 dongshull 的 master 构建产物没有这两个页面（382KB）。此前 CI 无条件覆盖，
+      # 导致每次构建出来的 UI 都缺这两块功能（实测服务端下发 设置=0 次 / Compose=5 次）。
+      - name: 判断是否使用仓库自带前端
+        id: front_choice
+        run: |
+          if [ -f front/index.html ]; then
+            echo "use_repo=true" >> "$GITHUB_OUTPUT"
+            echo "使用仓库自带的 front/（定制前端）"
+          else
+            echo "use_repo=false" >> "$GITHUB_OUTPUT"
+            echo "仓库无 front/，使用上游构建产物"
+          fi
+
       - name: Download Frontend Artifacts
+        if: steps.front_choice.outputs.use_repo != 'true'
         uses: actions/download-artifact@v4
         with:
           pattern: my-artifact-front-*
