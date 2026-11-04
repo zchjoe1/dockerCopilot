@@ -9,12 +9,30 @@
 #   sudo bash scripts/fix-docker-auth.sh --install    # 安装 systemd timer（每 5 分钟自愈）
 set -uo pipefail
 
-CANON_DIR="/vol1/1000/docker/.docker"
+# 2026-11-04：从顶层 .docker/ 挪进 dc 自己的项目目录（与 .bin/ 并列），顶层不再多两个隐藏目录。
+# ⚠️ 升级时若旧备份还在 /vol1/1000/docker/.docker/config.json，本脚本会自动搬过来（见 migrate_old）。
+CANON_DIR="/vol1/1000/docker/dockercopilot/.creds"
 CANON="$CANON_DIR/config.json"
 TARGET="/root/.docker/config.json"
 SELF="/usr/local/sbin/dc-fix-docker-auth.sh"
 
+OLD_CANON_DIR="/vol1/1000/docker/.docker"
+OLD_CANON="$OLD_CANON_DIR/config.json"
+
+# 迁移：旧版本把备份放在顶层 .docker/，挪到项目目录后第一次运行要把它搬过来。
+# ⛔ 只在"新位置还没有凭据、旧位置有 auths"时搬，别覆盖已有的新备份。
+migrate_old() {
+  grep -q '"auths"' "$CANON" 2>/dev/null && return 0
+  grep -q '"auths"' "$OLD_CANON" 2>/dev/null || return 0
+  mkdir -p "$CANON_DIR" && chmod 700 "$CANON_DIR"
+  mv -f "$OLD_CANON" "$CANON" && chmod 600 "$CANON"
+  rmdir "$OLD_CANON_DIR" 2>/dev/null || true
+  echo "[docker-auth] 已把旧备份 $OLD_CANON 迁到 $CANON"
+}
+
 fix_once() {
+  migrate_old
+
   # ① 备份不存在或没有 auths ⇒ 从当前文件抢救
   if ! grep -q '"auths"' "$CANON" 2>/dev/null; then
     mkdir -p "$CANON_DIR" && chmod 700 "$CANON_DIR"

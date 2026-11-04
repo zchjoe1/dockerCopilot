@@ -3,16 +3,16 @@
 #
 # 为什么需要：镜像里不含 docker CLI/compose（有意如此，避免为它重建镜像），
 # 而 internal/utiles/compose.go 直接 exec 宿主上的这个文件：
-#     /vol1/1000/docker/.dockercopilot/docker-compose
+#     /vol1/1000/docker/dockercopilot/.bin/docker-compose
 # 文件不存在 ⇒ ComposeAvailable()=false ⇒ 接口返回 available:false ⇒ **前端把 Compose 标签整个隐藏**。
 #
 # 用法：sudo bash scripts/install-compose-bin.sh
 # 环境变量：
-#   COMPOSE_BIN  安装路径（默认 /vol1/1000/docker/.dockercopilot/docker-compose）
+#   COMPOSE_BIN  安装路径（默认 /vol1/1000/docker/dockercopilot/.bin/docker-compose）
 #   HTTP_PROXY   下载代理（默认尝试 http://127.0.0.1:7890，失败则直连）
 set -uo pipefail
 
-BIN="${COMPOSE_BIN:-/vol1/1000/docker/.dockercopilot/docker-compose}"
+BIN="${COMPOSE_BIN:-/vol1/1000/docker/dockercopilot/.bin/docker-compose}"
 URL="https://github.com/docker/compose/releases/latest/download/docker-compose-linux-$(uname -m)"
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
