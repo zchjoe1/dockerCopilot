@@ -11,7 +11,7 @@ package utiles
 //
 //  2. 镜像里没有 docker CLI，也不想为此重建镜像（飞牛 pull 是坏的，新镜像进不来）。
 //     所以把 docker-compose 静态二进制放在挂载目录里直接 exec：
-//     /vol1/1000/docker/.dockercopilot/docker-compose
+//     /vol1/1000/docker/dockercopilot/.bin/docker-compose（2026-11-04 起放在项目目录内）
 //     compose v2 的独立二进制可以不经 docker CLI 直接跑，自己通过 DOCKER_HOST 连 daemon。
 
 import (
@@ -29,13 +29,26 @@ import (
 const (
 	// ComposeRoot 与宿主机同路径挂载，不能改。
 	ComposeRoot = "/vol1/1000/docker"
-	// ComposeBin 放在挂载目录里，这样不用动镜像。
-	ComposeBin = ComposeRoot + "/.dockercopilot/docker-compose"
+	// ComposeBinDefault 放在挂载目录里，这样不用动镜像。
+	// 2026-11-04 起放进 dc 自己的项目目录（原先在顶层隐藏目录 .dockercopilot/，与已有的
+	// dockercopilot/ 项目目录并存，顶层显得杂乱）。.bin/ 用点前缀，扫描时不会当成子项目。
+	ComposeBinDefault = ComposeRoot + "/dockercopilot/.bin/docker-compose"
 	// composeWait 单次生效命令的超时。拉镜像可能很慢，给宽一点。
 	composeWait = 5 * time.Minute
 	// composeOutputLimit 返回给前端的日志上限，避免把响应撑爆。
 	composeOutputLimit = 64 * 1024
 )
+
+// ComposeBinPath 运行时取值：允许环境变量 DC_COMPOSE_BIN 覆盖默认路径。
+// ⛔ 加这个覆盖是因为上一次挪路径被迫重建镜像（原先是编译期常量死值）——
+//    以后换位置只改环境变量即可，不用动镜像。
+// ⚠️ 故意做成函数而不是包级变量：包级变量在 init 时求值，测试与"运行中改环境"都改不动。
+func ComposeBinPath() string {
+	if v := strings.TrimSpace(os.Getenv("DC_COMPOSE_BIN")); v != "" {
+		return v
+	}
+	return ComposeBinDefault
+}
 
 // composeNameRe 项目名只允许单层目录名，杜绝 ../ 穿越和绝对路径。
 var composeNameRe = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]*$`)
@@ -114,7 +127,7 @@ func ListComposeProjects() ([]ComposeProject, error) {
 			continue
 		}
 		name := e.Name()
-		if strings.HasPrefix(name, ".") { // .dockercopilot 这类隐藏目录不算项目
+		if strings.HasPrefix(name, ".") { // 顶层隐藏目录（如 .recycle）不算项目
 			continue
 		}
 		dir := filepath.Join(ComposeRoot, name)
@@ -196,13 +209,13 @@ func ApplyCompose(name, action string) (string, error) {
 	if !ValidComposeName(name) {
 		return "", fmt.Errorf("非法的项目名: %q", name)
 	}
-	if _, err := os.Stat(ComposeBin); err != nil {
-		return "", fmt.Errorf("找不到 compose 二进制 %s（需要先上传到挂载目录）: %w", ComposeBin, err)
+	if _, err := os.Stat(ComposeBinPath()); err != nil {
+		return "", fmt.Errorf("找不到 compose 二进制 %s（需要先上传到挂载目录）: %w", ComposeBinPath(), err)
 	}
 	// 通过 fnOS 文件接口上传的文件默认没有执行位，这里补一下。
 	// 容器以 root 跑、挂载是 rw，所以能改；改不动就直接报出来，别等到 exec 才报 permission denied。
-	if err := os.Chmod(ComposeBin, 0o755); err != nil {
-		return "", fmt.Errorf("给 %s 加执行权限失败: %w", ComposeBin, err)
+	if err := os.Chmod(ComposeBinPath(), 0o755); err != nil {
+		return "", fmt.Errorf("给 %s 加执行权限失败: %w", ComposeBinPath(), err)
 	}
 	dir := filepath.Join(ComposeRoot, name)
 	cfg, err := composeFilePath(dir)
@@ -234,7 +247,7 @@ func ApplyCompose(name, action string) (string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), composeWait)
 	defer cancel()
 
-	cmd := exec.CommandContext(ctx, ComposeBin, args...)
+	cmd := exec.CommandContext(ctx, ComposeBinPath(), args...)
 	cmd.Dir = dir // 相对路径以项目目录为基准，和飞牛自己的行为一致
 	// DOCKER_HOST 继承容器环境（unix:///var/run/docker.sock）
 	cmd.Env = append(os.Environ(), "COMPOSE_PROGRESS=plain")
@@ -255,7 +268,7 @@ func ApplyCompose(name, action string) (string, error) {
 
 // ComposeAvailable 判断 compose 二进制是否就位，供前端提前提示。
 func ComposeAvailable() bool {
-	if _, err := os.Stat(ComposeBin); err != nil {
+	if _, err := os.Stat(ComposeBinPath()); err != nil {
 		return false
 	}
 	if _, err := os.Stat(ComposeRoot); err != nil {

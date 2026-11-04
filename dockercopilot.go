@@ -393,7 +393,7 @@ func composeListHandler(w http.ResponseWriter, r *http.Request) {
 		Msg:  "success",
 		Data: map[string]interface{}{
 			"root":      utiles.ComposeRoot,
-			"bin":       utiles.ComposeBin,
+			"bin":       utiles.ComposeBinPath(),
 			"available": utiles.ComposeAvailable(),
 			"projects":  projects,
 		},

@@ -22,7 +22,7 @@
 > 换机、重装、迁移请直接照 **[docs/部署清单-飞牛.md](docs/部署清单-飞牛.md)** 走。
 >
 > 最容易漏、且**漏了不报错只是少块功能**的两项：
-> 1. Compose 功能依赖宿主机二进制 `/vol1/1000/docker/.dockercopilot/docker-compose`
+> 1. Compose 功能依赖宿主机二进制 `/vol1/1000/docker/dockercopilot/.bin/docker-compose`
 >    （不在镜像里）⇒ `sudo bash scripts/install-compose-bin.sh`
 > 2. 「设置」「Compose」页面在**提交进仓库的 `front/`** 里，CI 不得用上游产物覆盖它
 
