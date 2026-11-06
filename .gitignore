@@ -28,5 +28,7 @@ venv/
 # 忽略 __pycache__ 目录及其中的所有文件
 __pycache__/
 /db.sqlite3
-/front/
+# /front/  ← 【本地修改 2026-10-07】原本忽略前端产物（上游 CI 每次从 dockerCopilotWeb 重新构建）。
+# 但用户当前使用的界面来自一个**已无法从源码重建**的更新版本（前端作者 DongShu），
+# 所以这里把构建好的 front/ 直接入库，保证镜像可复现。
 /logs/

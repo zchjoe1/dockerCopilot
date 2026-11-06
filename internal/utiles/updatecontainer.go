@@ -123,6 +123,11 @@ func UpdateContainer(serviceContext *svc.ServiceContext, id string, name string,
 		logx.Error("获取容器信息失败" + err.Error())
 		return err
 	}
+	// 2026-11-06：**先**记下旧镜像 ID —— 下面几行会把 inspectedContainer.Image 改成
+	// name:tag（重建容器要用），那之后就再也拿不到"更新前跑的是哪个镜像"了。
+	// 这就是更新完成后要清理的那个镜像。
+	oldImageID := inspectedContainer.Image
+
 	inspectedContainer.Config.Hostname = ""
 	inspectedContainer.Config.Image = imageNameAndTag
 	inspectedContainer.Image = imageNameAndTag
@@ -168,6 +173,17 @@ func UpdateContainer(serviceContext *svc.ServiceContext, id string, name string,
 			return err
 		}
 	}
+	// 2026-11-06：清理被替换掉的旧镜像。默认开（设置页可关）。
+	// ⚠️ 只删旧镜像、不 prune 全局 dangling —— 免得误删别的回滚版本；
+	//    清理失败**不影响**本次更新的成败（函数内部只记日志并回一句话）。
+	if GetSettings().CleanOldImageOn() {
+		if ok, msg := CleanupReplacedImage(serviceContext, oldImageID, imageNameAndTag); ok {
+			logx.Infof("容器 %s 更新完成，%s", name, msg)
+		} else {
+			logx.Infof("容器 %s 更新完成，旧镜像未清理：%s", name, msg)
+		}
+	}
+
 	oldTaskProgress.Message = "更新成功"
 	oldTaskProgress.DetailMsg = "更新成功"
 	oldTaskProgress.Percentage = 100

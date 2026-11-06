@@ -1,0 +1,528 @@
+<!DOCTYPE html>
+<html lang="zh-CN" class="h-full booting">
+  <head>
+    <meta charset="UTF-8" />
+
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="apple-mobile-web-app-title" content="Docker Copilot" />
+    <meta name="apple-mobile-web-app-icon" content="/logo.png" />
+    <link rel="manifest" href="/manifest.json" />
+    <link rel="icon" type="image/png" href="/logo.png" />
+    <link rel="apple-touch-icon" href="/logo.png" />
+    <meta name="theme-color" content="#0ea5e9" />
+    <title>Docker Copilot</title>
+    <meta name="description" content="Docker容器管理平台" />
+    <!-- 【本地修改 2026-10-07】界面在拿到 JWT 之前先隐藏，避免闪一下空壳。
+         用 <html> 上的 class 而不是 #root 的内联样式：脚本在 <head> 里执行时
+         <body> 还没解析出来，getElementById('root') 会是 null，样式改不上。 -->
+    <style>html.booting #root{visibility:hidden}</style>
+    <script type="module" crossorigin src="/assets/index-BUWPFL6N.js"></script>
+    <link rel="stylesheet" crossorigin href="/assets/index-DqMo61zh.css">
+  </head>
+  <body class="h-full bg-gray-50 dark:bg-gray-900 transition-colors duration-300">
+    <div id="root" class="h-full"></div>
+    <!-- 自动登录：后端已不校验 secretKey，这里静默取一次 JWT。
+         放在 body 末尾的普通脚本会在 type="module" 之前执行（模块是 defer 的）。
+         已有 token 直接显示；取不到 token（例如后端还是旧版）也显示，走原来的手动登录。 -->
+    <script>
+    (function () {
+      // 自动登录（本地修改 2026-10-07）：用户要求去掉密码功能，不再让手输密钥。
+      //
+      // 前端实际用的存储键是 docker_copilot_token（裸 JWT 字符串），
+      // 从压缩后的 index-BUWPFL6N.js 里确认：
+      //   请求拦截器  localStorage.getItem("docker_copilot_token") → Authorization: Bearer
+      //   登录成功    localStorage.setItem("docker_copilot_token", jwt)
+      //   初始化      有该键即视为已认证，否则弹「请输入密钥进行认证」
+      // （旧版前端用的 externalControllers 键在新版已废弃，别再用。）
+      var KEY = 'docker_copilot_token';
+      function show() { document.documentElement.classList.remove('booting'); }
+      function fresh() { try { return sessionStorage.getItem('dc_token_fresh') === '1'; } catch (e) { return false; } }
+      if (localStorage.getItem(KEY) && fresh()) { show(); return; }
+      fetch('/api/auth', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ secretKey: 'auto' })
+      }).then(function (r) { return r.json(); }).then(function (j) {
+        var jwt = j && j.data && j.data.jwt;
+        if (!jwt) { show(); return; }          // 取不到就显示，走原来的手动登录
+        localStorage.setItem(KEY, jwt);
+        try { sessionStorage.setItem('dc_token_fresh', '1'); } catch (e) {}
+        location.reload();
+      }).catch(function () { show(); });
+    })();
+    </script>
+    <!-- 设置页（本地新增）：把关于页组件 mw 的挂载点画成设置界面 -->
+    <script>
+/* ── 设置页（本地新增 2026-10-07）──────────────────────────────────────
+   为什么用原生 DOM 而不是 React：
+   前端是上游的压缩产物、没有 sourcemap，无法重新编译。React 那边只做了
+   两处最小补丁（导航标签「关于」→「设置」、关于页组件 mw 换成挂载点），
+   实际界面在这里用原生 DOM 画，挂到 mw 给出的 ref 容器里。
+   样式全部内联：应用用的是编译期 Tailwind，未出现在源码里的类名不会有对应 CSS。 */
+(function () {
+  if (window.__dcMountSettings) return;
+  var S = {
+    box: 'background:var(--dc-card);border:1px solid var(--dc-bd);border-radius:12px;padding:20px;margin-bottom:16px;box-shadow:var(--dc-shadow)',
+    h: 'font-size:16px;font-weight:600;color:var(--dc-fg);margin:0 0 4px',
+    sub: 'font-size:13px;color:var(--dc-sub);margin:0 0 14px;line-height:1.6',
+    lab: 'display:block;font-size:13px;font-weight:600;color:var(--dc-lab);margin:14px 0 6px',
+    inp: 'width:100%;box-sizing:border-box;padding:9px 12px;border:1px solid var(--dc-inp-bd);border-radius:8px;font-size:13px;font-family:ui-monospace,Menlo,monospace;color:var(--dc-fg);background:var(--dc-inp)',
+    btn: 'padding:9px 18px;border:none;border-radius:8px;background:#0ea5e9;color:#fff;font-size:13px;font-weight:600;cursor:pointer',
+    btn2: 'padding:6px 12px;border:1px solid var(--dc-inp-bd);border-radius:6px;background:var(--dc-btn2-bg);color:var(--dc-btn2-fg);font-size:12px;cursor:pointer;margin-right:6px',
+    kv: 'display:flex;gap:12px;font-size:12px;padding:6px 0;border-bottom:1px solid var(--dc-div)',
+    k: 'width:110px;color:var(--dc-sub);flex:none',
+    v: 'color:var(--dc-fg);font-family:ui-monospace,Menlo,monospace;word-break:break-all'
+  };
+  function el(tag, style, text) {
+    var e = document.createElement(tag);
+    if (style) e.setAttribute('style', style);
+    if (text != null) e.textContent = text;
+    return e;
+  }
+  function card() { return el('div', S.box); }
+
+  window.__dcMountSettings = function (root) {
+    root.innerHTML = '';
+    var wrap = el('div', 'padding:4px 8px 24px');
+    root.appendChild(wrap);
+
+    // ── 卡片一：白名单 ──────────────────────────────────────────────
+    var c1 = card();
+    c1.appendChild(el('h3', S.h, '镜像更新检测'));
+    c1.appendChild(el('p', S.sub,
+      'Docker Copilot 每隔一段时间去镜像仓库查一次有没有新版本。' +
+      '⚠️ 这个检测**不消耗** Docker Hub 的 pull 额度：它读远端 digest 用的是 HEAD 请求，' +
+      '而官方文档明写「HEAD requests are not counted」（取 token 走 auth.docker.io，也不是 manifest URL，同样不计）。' +
+      '所以下面这个名单的作用不是「躲限流」，而是「重要镜像勤查、其余慢查」：' +
+      '名单里的走「快档周期」，不在名单里的走「慢档周期」。'));
+
+    c1.appendChild(el('label', S.lab, '优先检测名单（这些走快档；留空 = 全部镜像都走快档）'));
+    var only = el('input', S.inp);
+    only.type = 'text';
+    only.placeholder = '留空 = 全部镜像都走快档；多个用英文逗号分隔';
+    c1.appendChild(only);
+    c1.appendChild(el('p', 'font-size:12px;color:var(--dc-faint);margin:6px 0 0;line-height:1.6',
+      '填镜像名，不要带 tag。例如容器用的是 zchjoe/procurement-center:latest，这里就填 zchjoe/procurement-center。'));
+
+    var presets = el('div', 'margin-top:10px');
+    c1.appendChild(presets);
+
+    // ── 卡片二：周期 ────────────────────────────────────────────────
+    var c2 = card();
+    c2.appendChild(el('h3', S.h, '检测周期（两档）'));
+    c2.appendChild(el('p', S.sub,
+      'cron 表达式，5 段：分 时 日 月 周。' +
+      '「快档」查优先名单里的镜像（名单为空则查全部）；「慢档」查不在名单里的其余镜像 —— ' +
+      '这样重要的镜像可以查得很勤，第三方镜像也不至于永远不查。慢档填 off 可关闭。'));
+    c2.appendChild(el('label', S.lab, '快档周期（优先名单）'));
+    var cron = el('input', S.inp);
+    cron.type = 'text';
+    cron.placeholder = '例如 */5 * * * * 表示每 5 分钟';
+    c2.appendChild(cron);
+    var cronPresets = el('div', 'margin-top:10px');
+    [['每 2 分钟', '*/2 * * * *'], ['每 5 分钟', '*/5 * * * *'], ['每 15 分钟', '*/15 * * * *'],
+     ['每 30 分钟', '*/30 * * * *'], ['每小时', '0 * * * *'], ['上游默认', '30 * * * *']].forEach(function (p) {
+      var b = el('button', S.btn2, p[0]);
+      b.onclick = function () { cron.value = p[1]; };
+      cronPresets.appendChild(b);
+    });
+    c2.appendChild(cronPresets);
+
+    c2.appendChild(el('label', S.lab, '慢档周期（不在优先名单里的其余镜像）'));
+    var cronOthers = el('input', S.inp);
+    cronOthers.type = 'text';
+    cronOthers.placeholder = '例如 30 4 * * * 表示每天 4:30；填 off 关闭慢档';
+    c2.appendChild(cronOthers);
+    c2.appendChild(el('p', 'font-size:12px;color:var(--dc-faint);margin:6px 0 0;line-height:1.6',
+      '留空 = 用默认值（每天 4:30）。如果优先名单是空的，快档本来就查了全部，慢档会自动跳过、不会重复查。'));
+    var othersPresets = el('div', 'margin-top:10px');
+    [['每天 4:30', '30 4 * * *'], ['每 6 小时', '30 */6 * * *'], ['每 12 小时', '30 */12 * * *'],
+     ['每天两次', '30 4,16 * * *'], ['关闭慢档', 'off']].forEach(function (p) {
+      var b = el('button', S.btn2, p[0]);
+      b.onclick = function () { cronOthers.value = p[1]; };
+      othersPresets.appendChild(b);
+    });
+    c2.appendChild(othersPresets);
+
+    // 2026-11-06：更新容器后是否自动删除被替换的旧镜像
+    var cleanWrap = el('label', 'display:flex;align-items:center;gap:8px;margin-top:14px;font-size:13px;cursor:pointer');
+    var clean = el('input');
+    clean.type = 'checkbox';
+    clean.style.cssText = 'width:16px;height:16px;accent-color:var(--dc-accent,#2A5BD7);cursor:pointer';
+    cleanWrap.appendChild(clean);
+    cleanWrap.appendChild(el('span', '', '更新容器后删除被替换的旧镜像'));
+    c2.appendChild(cleanWrap);
+    c2.appendChild(el('p', 'font-size:12px;color:var(--dc-faint);margin:6px 0 0;line-height:1.6',
+      '只删「这次更新前那个容器用的」那一个镜像；仍被其它容器（含已停止的）引用的会跳过。' +
+      '旧镜像在 pull 之后会变成 <none> 悬空镜像，不清理会一直占磁盘。'));
+
+    // ── 保存 ────────────────────────────────────────────────────────
+    var bar = el('div', 'display:flex;align-items:center;gap:12px;margin:20px 0');
+    var save = el('button', S.btn, '保存设置');
+    var msg = el('span', 'font-size:13px');
+    bar.appendChild(save); bar.appendChild(msg);
+    wrap.appendChild(c1); wrap.appendChild(c2); wrap.appendChild(bar);
+
+    // ── 卡片三：当前生效 + 版本信息 ─────────────────────────────────
+    var c3 = card();
+    c3.appendChild(el('h3', S.h, '当前生效'));
+    var info = el('div');
+    c3.appendChild(info);
+    wrap.appendChild(c3);
+
+    function kv(k, v) {
+      var r = el('div', S.kv);
+      r.appendChild(el('span', S.k, k));
+      r.appendChild(el('span', S.v, v));
+      return r;
+    }
+    function render(s) {
+      only.value = s.checkOnly || '';
+      cron.value = s.checkCron || '';
+      cronOthers.value = s.checkCronOthers || '';
+      clean.checked = s.cleanOldImage !== false;   /* 后端未设置时返回 true */
+      info.innerHTML = '';
+      info.appendChild(kv('优先名单', s.effectiveOnly || '（未设置 = 全部镜像都走快档）'));
+      info.appendChild(kv('快档周期', s.effectiveCron || ''));
+      info.appendChild(kv('慢档周期', s.effectiveOthersCron || '（已关闭）'));
+      info.appendChild(kv('设置文件', s.settingsFile || '/data/settings.json'));
+    }
+    function load() {
+      fetch('/api/settings').then(function (r) { return r.json(); }).then(function (j) {
+        render((j && j.data) || {});
+      }).catch(function () { msg.textContent = '读取设置失败'; msg.style.color = 'var(--dc-err)'; });
+    }
+    save.onclick = function () {
+      msg.textContent = '保存中…'; msg.style.color = 'var(--dc-sub)';
+      fetch('/api/settings', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ checkOnly: only.value, checkCron: cron.value, checkCronOthers: cronOthers.value, cleanOldImage: !!clean.checked })
+      }).then(function (r) { return r.json(); }).then(function (j) {
+        if (j && (j.code === 0 || j.code === 200)) {
+          render((j.data) || {});
+          msg.textContent = '✓ 已保存并生效（两档周期都已重挂，并立即各跑了一轮）';
+          msg.style.color = 'var(--dc-ok)';
+        } else {
+          msg.textContent = '✗ ' + ((j && j.msg) || '保存失败');
+          msg.style.color = 'var(--dc-err)';
+        }
+      }).catch(function () { msg.textContent = '✗ 网络错误'; msg.style.color = 'var(--dc-err)'; });
+    };
+    load();
+
+    // ── 版本信息（保留原来「关于」页的内容）────────────────────────
+    var c4 = card();
+    c4.appendChild(el('h3', S.h, '版本信息'));
+    var ver = el('div');
+    c4.appendChild(ver);
+    var appVersion = window.__DC_APP_VERSION || '';
+    function vkv(k, v) { var r = el('div', S.kv); r.appendChild(el('span', S.k, k)); r.appendChild(el('span', S.v, v)); return r; }
+    fetch('/api/version?type=local').then(function (r) { return r.json(); }).then(function (j) {
+      var d = (j && j.data) || {};
+      var bv = (typeof d === 'object' ? d.version : d) || 'unknown';
+      ver.appendChild(vkv('后端版本', bv));
+      ver.appendChild(vkv('前端版本', appVersion || 'DongShu'));
+      if (d && d.buildDate) ver.appendChild(vkv('构建时间', d.buildDate));
+    }).catch(function () {
+      ver.appendChild(vkv('后端版本', '读取失败'));
+      ver.appendChild(vkv('前端版本', appVersion || 'DongShu'));
+    });
+    wrap.appendChild(c4);
+
+    // 白名单快捷按钮：从当前容器列表里取，方便直接点
+    fetch('/api/containers').then(function (r) { return r.json(); }).then(function (j) {
+      var arr = (j && j.data) || [];
+      if (!arr.length) return;
+      var seen = {}, names = [];
+      arr.forEach(function (c) {
+        var img = c.usingImage || c.createImage || '';
+        var name = String(img).split(':')[0];
+        if (name && name !== 'None' && !seen[name]) { seen[name] = 1; names.push(name); }
+      });
+      names.sort();
+      var lab = el('p', 'font-size:12px;color:var(--dc-faint);margin:14px 0 6px', '点击快速加入白名单：');
+      presets.appendChild(lab);
+      names.slice(0, 40).forEach(function (n) {
+        var b = el('button', S.btn2, n);
+        b.onclick = function () {
+          var cur = only.value.split(',').map(function (x) { return x.trim(); }).filter(Boolean);
+          if (cur.indexOf(n) < 0) cur.push(n);
+          only.value = cur.join(',');
+        };
+        presets.appendChild(b);
+      });
+    }).catch(function () {});
+  };
+})();
+
+    </script>
+      <style>
+    /* 【本地新增 2026-10-07】注入页面（设置 / Compose）的颜色变量。
+       为什么用变量而不是直接写颜色：这两个页面全用内联样式，
+       而内联样式优先级高于样式表 —— .dark 里的规则覆盖不掉内联的 #fff。
+       但内联样式【可以引用 var()】，变量值随 .dark 切换，就等于跟着换肤了。
+       应用切主题的方式：给 <html> 加/去 `dark` 类，偏好存 localStorage.docker_copilot_theme。 */
+    :root {
+      --dc-card:#ffffff; --dc-bd:#e5e7eb; --dc-fg:#111827; --dc-sub:#6b7280;
+      --dc-faint:#9ca3af; --dc-lab:#374151; --dc-inp:#ffffff; --dc-inp-bd:#d1d5db;
+      --dc-code:#fafafa; --dc-btn2-bg:#ffffff; --dc-btn2-fg:#374151;
+      --dc-hover:#f3f4f6; --dc-div:#f3f4f6;
+      --dc-out-bg:#0f172a; --dc-out-fg:#e2e8f0;
+      --dc-ok:#16a34a; --dc-err:#dc2626; --dc-warn:#b45309;
+      --dc-danger-fg:#b91c1c; --dc-danger-bd:#fca5a5;
+      --dc-shadow:0 1px 2px rgba(0,0,0,.04);
+    }
+    .dark {
+      --dc-card:#1f2937; --dc-bd:#374151; --dc-fg:#f3f4f6; --dc-sub:#9ca3af;
+      --dc-faint:#6b7280; --dc-lab:#d1d5db; --dc-inp:#111827; --dc-inp-bd:#4b5563;
+      --dc-code:#0b1220; --dc-btn2-bg:#1f2937; --dc-btn2-fg:#d1d5db;
+      --dc-hover:#374151; --dc-div:#374151;
+      --dc-out-bg:#020617; --dc-out-fg:#cbd5e1;
+      --dc-ok:#4ade80; --dc-err:#f87171; --dc-warn:#fbbf24;
+      --dc-danger-fg:#fca5a5; --dc-danger-bd:#7f1d1d;
+      --dc-shadow:none;
+    }
+
+    /* 【本地新增 2026-10-07】Compose 页面的响应式布局。
+       只放「随屏幕变化」的属性（宽度/最小宽度/高度/排列方向）；
+       颜色边框等仍走内联样式，改动最小。
+       注意：内联样式优先级高于样式表，媒体查询覆盖不了内联值，
+       所以这些属性必须从内联挪到这里。 */
+    .dc-cmp-wrap  { padding: 4px 8px 24px; }
+    .dc-cmp-grid  { display: flex; gap: 16px; align-items: flex-start; flex-wrap: wrap; }
+    .dc-cmp-left  { width: 250px; flex: none; max-height: 72vh; overflow: auto; }
+    .dc-cmp-right { flex: 1; min-width: 420px; }
+    .dc-cmp-ta    { min-height: 360px; }
+    .dc-cmp-list  { display: block; }
+
+    /* 手机：竖排；项目列表压成一条可横向滑动的标签栏；编辑器占满宽度 */
+    @media (max-width: 768px) {
+      .dc-cmp-wrap  { padding: 4px 4px 96px; }   /* 底部让开固定导航栏 */
+      .dc-cmp-grid  { flex-direction: column; gap: 12px; }
+      .dc-cmp-left  { width: 100%; max-height: none; overflow: visible; }
+      .dc-cmp-right { width: 100%; min-width: 0; }
+      .dc-cmp-ta    { min-height: 46vh; }
+      .dc-cmp-list  { display: flex; flex-wrap: nowrap; overflow-x: auto;
+                      gap: 8px; padding-bottom: 6px; -webkit-overflow-scrolling: touch; }
+      .dc-cmp-item  { flex: none; white-space: nowrap; margin-bottom: 0;
+                      border: 1px solid #e5e7eb; }
+      .dc-cmp-note  { font-size: 11.5px; }
+    }
+    </style>
+    <!-- 【本地新增 2026-10-07】飞牛 compose 项目管理页。
+         和设置页同样的做法：原生 DOM + 全内联样式。
+         应用是编译期 Tailwind，没出现在原源码里的类名不会有对应 CSS，所以不用 class。 -->
+    <script>
+    (function () {
+      if (window.__dcMountCompose) return;
+      var S = {
+        box: 'background:var(--dc-card);border:1px solid var(--dc-bd);border-radius:12px;padding:18px;box-shadow:var(--dc-shadow)',
+        h: 'font-size:15px;font-weight:600;color:var(--dc-fg);margin:0 0 10px',
+        btn: 'padding:8px 16px;border:none;border-radius:8px;background:#0ea5e9;color:#fff;font-size:13px;font-weight:600;cursor:pointer',
+        btn2: 'padding:8px 14px;border:1px solid var(--dc-inp-bd);border-radius:8px;background:var(--dc-btn2-bg);color:var(--dc-btn2-fg);font-size:13px;cursor:pointer',
+        inp: 'width:100%;box-sizing:border-box;padding:10px 12px;border:1px solid var(--dc-inp-bd);border-radius:8px;font-size:12.5px;line-height:1.6;font-family:ui-monospace,Menlo,Consolas,monospace;color:var(--dc-fg);background:var(--dc-code);resize:vertical'
+      };
+      function el(tag, style, text) {
+        var e = document.createElement(tag);
+        if (style) e.setAttribute('style', style);
+        if (text != null) e.textContent = text;
+        return e;
+      }
+      function card() { return el('div', S.box); }
+      function note(text, color) {
+        return el('div', 'font-size:12px;color:' + (color || 'var(--dc-sub)') + ';margin-top:8px;line-height:1.6', text);
+      }
+
+      window.__dcMountCompose = function (root) {
+        root.innerHTML = '';
+        var wrap = el('div', '');
+        wrap.className = 'dc-cmp-wrap';
+        root.appendChild(wrap);
+
+        var head = el('div', 'margin-bottom:12px');
+        head.appendChild(el('h2', 'font-size:20px;font-weight:700;color:var(--dc-fg);margin:0 0 4px', 'Compose 项目管理'));
+        head.appendChild(el('p', 'font-size:13px;color:var(--dc-sub);margin:0',
+          '直接读取和编辑飞牛的 compose 文件，改完可以一键生效（docker compose up -d）。保存时会自动备份旧文件。'));
+        wrap.appendChild(head);
+
+        var msg = el('div', 'font-size:13px;min-height:20px;margin-bottom:10px');
+        wrap.appendChild(msg);
+
+        var grid = el('div', '');
+        grid.className = 'dc-cmp-grid';
+        wrap.appendChild(grid);
+
+        var left = card();
+        left.className = 'dc-cmp-left';
+        left.setAttribute('style', S.box);
+        var right = card();
+        right.className = 'dc-cmp-right';
+        right.setAttribute('style', S.box);
+        grid.appendChild(left);
+        grid.appendChild(right);
+
+        // ── 左：项目列表 ────────────────────────────────────────────
+        left.appendChild(el('h3', S.h, '项目'));
+        var list = el('div');
+        list.className = 'dc-cmp-list';
+        left.appendChild(list);
+        var refresh = el('button', S.btn2 + ';margin-top:12px;width:100%', '刷新列表');
+        left.appendChild(refresh);
+
+        // ── 右：编辑器 ──────────────────────────────────────────────
+        var title = el('h3', S.h, '未选择项目');
+        right.appendChild(title);
+        var path = el('div', 'font-size:11px;color:var(--dc-faint);font-family:ui-monospace,Menlo,monospace;margin:-4px 0 10px;word-break:break-all');
+        right.appendChild(path);
+
+        var ta = document.createElement('textarea');
+        ta.className = 'dc-cmp-ta';
+        ta.setAttribute('style', S.inp);
+        ta.spellcheck = false;
+        ta.disabled = true;
+        right.appendChild(ta);
+
+        var bar = el('div', 'display:flex;gap:8px;flex-wrap:wrap;margin-top:12px');
+        right.appendChild(bar);
+        var bSave = el('button', S.btn, '保存');
+        var bCheck = el('button', S.btn2, '语法校验');
+        var bPull = el('button', S.btn2, '拉取镜像');
+        var bUp = el('button', S.btn2, '一键生效');
+        var bDown = el('button', S.btn2 + ';color:var(--dc-danger-fg);border-color:var(--dc-danger-bd)', '停止并删除');
+        [bSave, bCheck, bPull, bUp, bDown].forEach(function (b) { b.disabled = true; bar.appendChild(b); });
+
+        var out = el('pre', 'margin:12px 0 0;padding:12px;background:var(--dc-out-bg);color:var(--dc-out-fg);border-radius:8px;font-size:12px;line-height:1.6;max-height:280px;overflow:auto;white-space:pre-wrap;word-break:break-all;display:none');
+        right.appendChild(out);
+
+        var dirty = false;
+        var current = null;
+
+        function setMsg(t, color) { msg.textContent = t || ''; msg.style.color = color || 'var(--dc-sub)'; }
+        function showOut(t) {
+          out.style.display = 'block';
+          out.textContent = t || '(无输出)';
+        }
+        function markDirty(v) {
+          dirty = v;
+          title.textContent = current ? ('编辑：' + current + (dirty ? '  ●未保存' : '')) : '未选择项目';
+        }
+
+        ta.addEventListener('input', function () { if (!dirty) markDirty(true); });
+
+        // 未保存就切换项目时给个确认，避免手一抖丢掉改动
+        function confirmLeave() {
+          return !dirty || window.confirm('当前项目有未保存的改动，确定要切换吗？');
+        }
+
+        function open(name) {
+          if (!confirmLeave()) return;
+          setMsg('读取中…');
+          fetch('/api/compose/file?name=' + encodeURIComponent(name))
+            .then(function (r) { return r.json(); })
+            .then(function (j) {
+              if (j.code !== 200) { setMsg('✗ ' + j.msg, 'var(--dc-err)'); return; }
+              current = name;
+              ta.disabled = false;
+              ta.value = j.data.content;
+              path.textContent = j.data.project.configFile;
+              markDirty(false);
+              out.style.display = 'none';
+              [bSave, bCheck, bPull, bUp, bDown].forEach(function (b) { b.disabled = false; });
+              setMsg('已载入 ' + name);
+            })
+            .catch(function () { setMsg('✗ 读取失败', 'var(--dc-err)'); });
+        }
+
+        function renderList(data) {
+          list.innerHTML = '';
+          var ps = data.projects || [];
+          if (!data.available) {
+            list.appendChild(note('容器里找不到 compose 二进制：' + data.bin +
+              '。需要把它上传到挂载目录（见下方说明）。', 'var(--dc-warn)'));
+          }
+          if (!ps.length) {
+            list.appendChild(note('没有发现 compose 项目（扫描目录：' + data.root + '）'));
+            return;
+          }
+          ps.forEach(function (p) {
+            var item = el('div', 'padding:9px 10px;border-radius:8px;cursor:pointer;font-size:13px;color:var(--dc-fg);margin-bottom:4px;border:1px solid transparent');
+            item.className = 'dc-cmp-item';
+            item.textContent = p.name;
+            item.onmouseenter = function () { item.style.background = 'var(--dc-hover)'; };
+            item.onmouseleave = function () { item.style.background = ''; };
+            item.onclick = function () { open(p.name); };
+            list.appendChild(item);
+          });
+          setMsg('共 ' + ps.length + ' 个项目');
+        }
+
+        function loadList() {
+          setMsg('加载中…');
+          fetch('/api/compose')
+            .then(function (r) { return r.json(); })
+            .then(function (j) {
+              if (j.code !== 200) { setMsg('✗ ' + j.msg, 'var(--dc-err)'); return; }
+              renderList(j.data);
+            })
+            .catch(function () { setMsg('✗ 加载失败', 'var(--dc-err)'); });
+        }
+
+        function save() {
+          if (!current) return;
+          setMsg('保存中…');
+          fetch('/api/compose/file', {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ name: current, content: ta.value })
+          }).then(function (r) { return r.json(); }).then(function (j) {
+            if (j.code !== 200) { setMsg('✗ ' + j.msg, 'var(--dc-err)'); return; }
+            markDirty(false);
+            setMsg('✓ 已保存' + (j.data && j.data.backup ? '，备份：' + j.data.backup : ''), 'var(--dc-ok)');
+          }).catch(function () { setMsg('✗ 保存失败', 'var(--dc-err)'); });
+        }
+
+        function apply(action, label) {
+          if (!current) return;
+          if (dirty && !window.confirm('有未保存的改动，确定直接' + label + '吗？')) return;
+          setMsg(label + '中…（可能要拉镜像，慢的话请等）');
+          out.style.display = 'block';
+          out.textContent = '执行中…';
+          fetch('/api/compose/apply', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ name: current, action: action })
+          }).then(function (r) { return r.json(); }).then(function (j) {
+            showOut(j.data && j.data.output);
+            if (j.code === 200) setMsg('✓ ' + label + '完成', 'var(--dc-ok)');
+            else setMsg('✗ ' + j.msg, 'var(--dc-err)');
+          }).catch(function () { showOut('网络错误'); setMsg('✗ 请求失败', 'var(--dc-err)'); });
+        }
+
+        bSave.onclick = save;
+        bCheck.onclick = function () { apply('config', '语法校验'); };
+        bPull.onclick = function () { apply('pull', '拉取镜像'); };
+        bUp.onclick = function () { apply('up', '一键生效'); };
+        bDown.onclick = function () {
+          if (!window.confirm('会停止并删除「' + current + '」的容器，确定吗？')) return;
+          apply('down', '停止并删除');
+        };
+        refresh.onclick = loadList;
+
+        var noteEl = note(
+          '「一键生效」等价于在项目目录里执行 docker compose -p <项目名> up -d --remove-orphans。' +
+          '要更新镜像：先点「拉取镜像」（docker compose pull），再点「一键生效」——' +
+          '顺序反了的话 compose 发现本地已有同名镜像就不会重建。' +
+          '拉取走的是 compose 二进制直连 Docker daemon，不受飞牛 App 层' +
+          '「镜像已存在就报 errno 52428822」那层检查影响。下面会打印完整命令输出。');
+        noteEl.className = 'dc-cmp-note';
+        right.appendChild(noteEl);
+
+        loadList();
+      };
+    })();
+    </script>
+  </body>
+</html>

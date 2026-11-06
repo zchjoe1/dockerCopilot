@@ -1,7 +1,9 @@
 package main
 
 import (
+	"context"
 	"embed"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"go/types"
@@ -10,11 +12,12 @@ import (
 	"net/http"
 	"os"
 	"strings"
+	"sync"
 
 	"github.com/onlyLTY/dockerCopilot/internal/config"
 	"github.com/onlyLTY/dockerCopilot/internal/handler"
 	"github.com/onlyLTY/dockerCopilot/internal/svc"
-	dctypes "github.com/onlyLTY/dockerCopilot/internal/types"
+	MyType "github.com/onlyLTY/dockerCopilot/internal/types"
 	"github.com/onlyLTY/dockerCopilot/internal/utiles"
 	"github.com/robfig/cron/v3"
 	"github.com/zeromicro/go-zero/core/conf"
@@ -82,43 +85,37 @@ export const customImageLogos = {
 		}
 	}
 
-	// 2026-11-01：把「只查关心的镜像 / 自定义检查节奏」两个开关收进仓库。
-	// 来源：NAS 上那台 dc 是**本地改过再构建**的（compose 里写着 CHECK_ONLY / CHECK_CRON），
-	// 代码从没进仓库 ⇒ 一换成 registry 里的镜像这两个变量就失效，dc 会每 30 分钟检查全部镜像
-	// （实测那台有 20+ 个镜像，Docker Hub 匿名额度会被打满，私有仓还会 401）。
-	// 所以按原行为在这里实现：
-	//   CHECK_ONLY=zchjoe/procurement-center,zchjoe/nc-bridge   ← 逗号分隔；为空 = 全查
-	//   CHECK_CRON=*/5 * * * *                                   ← 5 段标准 cron；默认 30 * * * *
-	// 匹配规则用**子串包含**：写 zchjoe/nc-bridge 也能命中 zchjoe/nc-bridge:latest。
-	checkOnly := parseCheckOnly(os.Getenv("CHECK_ONLY"))
-	checkCron := strings.TrimSpace(os.Getenv("CHECK_CRON"))
-	if checkCron == "" {
-		checkCron = "30 * * * *"
-	}
-	if len(checkOnly) > 0 {
-		logx.Infof("[checkupdate] 只检查 %d 个镜像：%s", len(checkOnly), strings.Join(checkOnly, ", "))
-	}
-	logx.Infof("[checkupdate] 检查节奏：%s", checkCron)
-
-	list, err := utiles.GetImagesList(ctx)
-	if err != nil {
+	// 启动时先探一次镜像列表：连不上 Docker 就直接退出，避免服务起在半残状态。
+	// （实际的检测与白名单过滤在下面的 checkAll 里，它会再取一次。）
+	if _, err := utiles.GetImagesList(ctx); err != nil {
 		logx.Errorf("panic获取镜像列表出错: %v", err)
 		panic(err)
 	}
-	go ctx.HubImageInfo.CheckUpdate(ctx.DockerClient, filterImages(list, checkOnly))
+	// ── 本地修改（2026-10-07）────────────────────────────────────────────
+	// 设置来源优先级：/data/settings.json（网页「设置」页） > 环境变量 > 内置默认。
+	// 白名单每轮现读，改完下一轮即生效；周期变更由 PUT /api/settings 动态重挂定时任务，
+	// 两者都不需要重启容器。
+	//
+	// ① 白名单：上游每轮检查【全部】镜像，每个约 2 次 registry 请求（取 token + 取 manifest）。
+	//    22 个镜像 → 每轮约 44 次；Docker Hub 匿名限流 100 次 manifest/6h/IP
+	//    → 单纯调短周期会撞限流，反而查不出更新。
+	// ② 周期：上游硬编码 "30 * * * *"（每小时 :30），镜像推上去最多等 1 小时才被发现；
+	//    且没有任何「立即检查」HTTP 端点（GET /api/containers 只返回内存缓存）。
+	utiles.LoadSettings()
+	appCtx = ctx
+
+	go checkAll()
+
+	// 【本地新增 2026-10-07】容器资源占用（CPU/内存）后台采样，
+	// 供 /api/containers 把数字直接带进卡片。详见 utiles/containerstats.go 顶部说明。
+	utiles.StartStatsSampler(ctx)
+
 	corndanmu := cron.New(cron.WithParser(cron.NewParser(
 		cron.Minute | cron.Hour | cron.Dom | cron.Month | cron.Dow,
 	)))
-	_, err = corndanmu.AddFunc(checkCron, func() {
-		list, err := utiles.GetImagesList(ctx)
-		if err != nil {
-			logx.Errorf("panic获取镜像列表出错: %v", err)
-			panic(err)
-		}
-		ctx.HubImageInfo.CheckUpdate(ctx.DockerClient, filterImages(list, checkOnly))
-	})
-	if err != nil {
-		logx.Errorf("panic添加定时任务出错: %v", err)
+	cronInst = corndanmu
+	if err := applyCron(); err != nil {
+		logx.Errorf("panic挂载定时任务失败: %v", err)
 		panic(err)
 	}
 	corndanmu.Start()
@@ -143,6 +140,363 @@ export const customImageLogos = {
 	logx.Info("程序版本" + config.Version)
 	server.Start()
 }
+
+// ── 本地新增（2026-10-07）：设置驱动的检测 ──────────────────────────
+var (
+	appCtx *svc.ServiceContext
+
+	cronMu          sync.Mutex
+	cronInst        *cron.Cron
+	cronEntry       cron.EntryID
+	cronEntryOthers cron.EntryID // 慢档（不在优先名单里的其余镜像）
+)
+
+// effectiveCron 按「设置 > 环境变量 > 默认」解析出周期表达式。
+func effectiveCron() string {
+	if v := strings.TrimSpace(utiles.GetSettings().CheckCron); v != "" {
+		return v
+	}
+	if v := strings.TrimSpace(os.Getenv("CHECK_CRON")); v != "" {
+		return v
+	}
+	return "30 * * * *"
+}
+
+// effectiveOthersCron 解析慢档周期：设置 > 环境变量 CHECK_CRON_OTHERS > 默认每天 4:30。
+// 返回空串表示**关闭慢档**（显式填 off/none/-，或不设且想只跑快档时用得到）。
+func effectiveOthersCron() string {
+	v := strings.TrimSpace(utiles.GetSettings().CheckCronOthers)
+	if v == "" {
+		v = strings.TrimSpace(os.Getenv("CHECK_CRON_OTHERS"))
+	}
+	if v == "" {
+		return "30 4 * * *" // 默认每天 4:30 查一次其余镜像
+	}
+	switch strings.ToLower(v) {
+	case "off", "none", "-", "disable", "disabled":
+		return ""
+	}
+	return v
+}
+
+// effectiveOnly 按「设置 > 环境变量」解析出**优先名单**原始串。
+func effectiveOnly() string {
+	if v := strings.TrimSpace(utiles.GetSettings().CheckOnly); v != "" {
+		return v
+	}
+	return strings.TrimSpace(os.Getenv("CHECK_ONLY"))
+}
+
+// applyCron 用当前生效的周期重挂定时任务（先摘旧的再挂新的）。
+// 启动时与 PUT /api/settings 之后都会调用，所以改周期不需要重启容器。
+func applyCron() error {
+	expr := effectiveCron()
+	cronMu.Lock()
+	defer cronMu.Unlock()
+	if cronInst == nil {
+		return nil
+	}
+	if cronEntry != 0 {
+		cronInst.Remove(cronEntry)
+		cronEntry = 0
+	}
+	id, err := cronInst.AddFunc(expr, checkAll)
+	if err != nil {
+		return fmt.Errorf("cron 表达式 %q 无效（需要 5 段：分 时 日 月 周）: %w", expr, err)
+	}
+	cronEntry = id
+
+	// 慢档：不在优先名单里的其余镜像（2026-10-07 新增）。空串 = 关闭。
+	othersExpr := effectiveOthersCron()
+	if othersExpr != "" {
+		id2, err2 := cronInst.AddFunc(othersExpr, checkOthers)
+		if err2 != nil {
+			return fmt.Errorf("慢档 cron 表达式 %q 无效（需要 5 段：分 时 日 月 周）: %w", othersExpr, err2)
+		}
+		cronEntryOthers = id2
+	}
+	logx.Infof("镜像更新检测周期: 优先名单 %q / 其余 %q（可在「设置」页修改，无需重启）", expr, othersExpr)
+	return nil
+}
+
+// checkAll 是**快档**：只查优先名单（名单为空则查全部）。启动时与每轮定时都会调用。
+func checkAll() {
+	if appCtx == nil {
+		return
+	}
+	l, err := utiles.GetImagesList(appCtx)
+	if err != nil {
+		logx.Errorf("panic获取镜像列表出错: %v", err)
+		panic(err)
+	}
+	only := utiles.SplitList(effectiveOnly())
+	if len(only) == 0 {
+		appCtx.HubImageInfo.CheckUpdate(appCtx.DockerClient, l)
+		return
+	}
+	filtered := make([]MyType.Image, 0, len(only))
+	for _, img := range l {
+		for _, n := range only {
+			if img.ImageName == n {
+				filtered = append(filtered, img)
+				break
+			}
+		}
+	}
+	logx.Infof("快档：优先名单命中 %d / %d 个镜像", len(filtered), len(l))
+	appCtx.HubImageInfo.CheckUpdate(appCtx.DockerClient, filtered)
+}
+
+// checkOthers 是**慢档**：只查**不在**优先名单里的其余镜像（2026-10-07 新增）。
+// 名单为空时快档已经查了全部，这里直接返回，避免同一轮重复请求。
+func checkOthers() {
+	if appCtx == nil {
+		return
+	}
+	only := utiles.SplitList(effectiveOnly())
+	if len(only) == 0 {
+		return // 没有优先名单 → 快档就是全量，慢档无事可做
+	}
+	l, err := utiles.GetImagesList(appCtx)
+	if err != nil {
+		logx.Errorf("慢档获取镜像列表出错: %v", err)
+		return
+	}
+	rest := make([]MyType.Image, 0, len(l))
+	for _, img := range l {
+		hit := false
+		for _, n := range only {
+			if img.ImageName == n {
+				hit = true
+				break
+			}
+		}
+		if !hit {
+			rest = append(rest, img)
+		}
+	}
+	if len(rest) == 0 {
+		logx.Infof("慢档：没有需要检查的其余镜像")
+		return
+	}
+	logx.Infof("慢档：检查其余 %d / %d 个镜像", len(rest), len(l))
+	appCtx.HubImageInfo.CheckUpdate(appCtx.DockerClient, rest)
+}
+
+// settingsView 是 GET /api/settings 的返回：既给出已保存的值，
+// 也给出「实际生效值」，这样界面能显示 env 兜底的结果。
+type settingsView struct {
+	CheckOnly           string `json:"checkOnly"`
+	CheckCron           string `json:"checkCron"`
+	CheckCronOthers     string `json:"checkCronOthers"`
+	CleanOldImage       bool   `json:"cleanOldImage"`
+	EffectiveOnly       string `json:"effectiveOnly"`
+	EffectiveCron       string `json:"effectiveCron"`
+	EffectiveOthersCron string `json:"effectiveOthersCron"`
+	SettingsFile        string `json:"settingsFile"`
+}
+
+func settingsGetHandler(w http.ResponseWriter, r *http.Request) {
+	s := utiles.GetSettings()
+	// 用 types.Resp 包一层：本项目的接口都是 {code,msg,data} 结构，
+	// 前端（以及其它调用方）按 j.data 取值。httpx.OkJson 是裸返回，不能用。
+	httpx.WriteJson(w, http.StatusOK, MyType.Resp{
+		Code: 200,
+		Msg:  "success",
+		Data: settingsView{
+			CheckOnly:           s.CheckOnly,
+			CheckCron:           s.CheckCron,
+			CheckCronOthers:     s.CheckCronOthers,
+			CleanOldImage:       s.CleanOldImageOn(),
+			EffectiveOnly:       effectiveOnly(),
+			EffectiveCron:       effectiveCron(),
+			EffectiveOthersCron: effectiveOthersCron(),
+			SettingsFile:        utiles.SettingsPath,
+		},
+	})
+}
+
+func settingsPutHandler(w http.ResponseWriter, r *http.Request) {
+	var body utiles.Settings
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		httpx.WriteJson(w, http.StatusOK, xhttp.BaseResponse[types.Nil]{Code: 40000, Msg: "请求体不是合法 JSON: " + err.Error()})
+		return
+	}
+	body.CheckOnly = strings.TrimSpace(body.CheckOnly)
+	body.CheckCron = strings.TrimSpace(body.CheckCron)
+	body.CheckCronOthers = strings.TrimSpace(body.CheckCronOthers)
+
+	// 先校验 cron 再落盘，避免存进去一个永远挂不上的表达式。
+	if body.CheckCron != "" {
+		if _, err := cron.ParseStandard(body.CheckCron); err != nil {
+			httpx.WriteJson(w, http.StatusOK, xhttp.BaseResponse[types.Nil]{
+				Code: 40001,
+				Msg:  fmt.Sprintf("cron 表达式 %q 无效（需要 5 段：分 时 日 月 周，例如 */5 * * * *）: %v", body.CheckCron, err),
+			})
+			return
+		}
+	}
+	if body.CheckCronOthers != "" {
+		if _, err := cron.ParseStandard(body.CheckCronOthers); err != nil {
+			// 允许 off/none/- 表示关闭慢档，它们不是 cron 表达式
+			switch strings.ToLower(body.CheckCronOthers) {
+			case "off", "none", "-", "disable", "disabled":
+			default:
+				httpx.WriteJson(w, http.StatusOK, xhttp.BaseResponse[types.Nil]{
+					Code: 40001,
+					Msg:  fmt.Sprintf("慢档 cron 表达式 %q 无效（需要 5 段，或填 off 关闭）: %v", body.CheckCronOthers, err),
+				})
+				return
+			}
+		}
+	}
+	if err := utiles.SaveSettings(body); err != nil {
+		httpx.WriteJson(w, http.StatusOK, xhttp.BaseResponse[types.Nil]{Code: 50000, Msg: "写入设置失败: " + err.Error()})
+		return
+	}
+	if err := applyCron(); err != nil {
+		httpx.WriteJson(w, http.StatusOK, xhttp.BaseResponse[types.Nil]{Code: 40001, Msg: err.Error()})
+		return
+	}
+	logx.Infof("设置已更新: 优先名单=%q 快档=%q 慢档=%q", body.CheckOnly, effectiveCron(), effectiveOthersCron())
+	go checkAll()    // 改完立刻按新名单跑一轮快档，不用等下一个周期
+	go checkOthers() // 慢档也顺带跑一次，便于确认补集对不对
+	httpx.WriteJson(w, http.StatusOK, MyType.Resp{
+		Code: 200,
+		Msg:  "success",
+		Data: settingsView{
+			CheckOnly:     body.CheckOnly,
+			CheckCron:     body.CheckCron,
+			EffectiveOnly: effectiveOnly(),
+			EffectiveCron: effectiveCron(),
+			SettingsFile:  utiles.SettingsPath,
+		},
+	})
+}
+
+// ── 本地新增（2026-10-07）：飞牛 compose 项目的读取 / 编辑 / 一键生效 ──────
+//
+// 项目名走查询参数或 JSON body，不用路径参数 —— 少依赖一层 go-zero 的
+// 路径参数提取方式。名字合法性由 utiles 侧白名单兜底（禁止 ../ 穿越）。
+type composeBody struct {
+	Name    string `json:"name"`
+	Content string `json:"content"`
+	Action  string `json:"action"`
+}
+
+func composeListHandler(w http.ResponseWriter, r *http.Request) {
+	projects, err := utiles.ListComposeProjects()
+	if err != nil {
+		httpx.WriteJson(w, http.StatusOK, MyType.Resp{Code: 50000, Msg: err.Error()})
+		return
+	}
+	httpx.WriteJson(w, http.StatusOK, MyType.Resp{
+		Code: 200,
+		Msg:  "success",
+		Data: map[string]interface{}{
+			"root":      utiles.ComposeRoot,
+			"bin":       utiles.ComposeBinPath(),
+			"available": utiles.ComposeAvailable(),
+			"projects":  projects,
+		},
+	})
+}
+
+func composeGetHandler(w http.ResponseWriter, r *http.Request) {
+	name := strings.TrimSpace(r.URL.Query().Get("name"))
+	if name == "" {
+		httpx.WriteJson(w, http.StatusOK, MyType.Resp{Code: 40000, Msg: "缺少 name 参数"})
+		return
+	}
+	p, content, err := utiles.ReadCompose(name)
+	if err != nil {
+		httpx.WriteJson(w, http.StatusOK, MyType.Resp{Code: 40001, Msg: err.Error()})
+		return
+	}
+	httpx.WriteJson(w, http.StatusOK, MyType.Resp{
+		Code: 200,
+		Msg:  "success",
+		Data: map[string]interface{}{"project": p, "content": content},
+	})
+}
+
+func composePutHandler(w http.ResponseWriter, r *http.Request) {
+	var body composeBody
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		httpx.WriteJson(w, http.StatusOK, MyType.Resp{Code: 40000, Msg: "请求体不是合法 JSON: " + err.Error()})
+		return
+	}
+	backup, err := utiles.SaveCompose(strings.TrimSpace(body.Name), body.Content)
+	if err != nil {
+		httpx.WriteJson(w, http.StatusOK, MyType.Resp{Code: 50000, Msg: err.Error()})
+		return
+	}
+	logx.Infof("compose 已保存: %s（备份 %s）", body.Name, backup)
+	httpx.WriteJson(w, http.StatusOK, MyType.Resp{
+		Code: 200,
+		Msg:  "success",
+		Data: map[string]interface{}{"backup": backup},
+	})
+}
+
+func composeApplyHandler(w http.ResponseWriter, r *http.Request) {
+	var body composeBody
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		httpx.WriteJson(w, http.StatusOK, MyType.Resp{Code: 40000, Msg: "请求体不是合法 JSON: " + err.Error()})
+		return
+	}
+	name := strings.TrimSpace(body.Name)
+	// 即使失败也把命令输出带回前端：出错时那段输出才是最有用的信息。
+	out, err := utiles.ApplyCompose(name, strings.TrimSpace(body.Action))
+	code, msg := 200, "success"
+	if err != nil {
+		code, msg = 50000, err.Error()
+	}
+	logx.Infof("compose 生效: %s action=%q err=%v", name, body.Action, err)
+	httpx.WriteJson(w, http.StatusOK, MyType.Resp{
+		Code: code,
+		Msg:  msg,
+		Data: map[string]interface{}{"output": out, "ok": err == nil},
+	})
+}
+
+// POST /api/image/tag  {source, target}
+//
+// 给本地已有镜像重打一个标签。加它是因为一个具体处境：
+// CI 推的标签是 zchjoe/dockercopilot:latest，而飞牛上现存的镜像是 :local，
+// 飞牛的镜像拉取又是坏的（errno 52428822），compose 见到本地没有 :latest 就会去拉、然后失败。
+// 有了这个接口就能就地 :local → :latest，不用拉任何东西。
+func imageTagHandler(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Source string `json:"source"`
+		Target string `json:"target"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		httpx.WriteJson(w, http.StatusOK, MyType.Resp{Code: 40000, Msg: "请求体不是合法 JSON: " + err.Error()})
+		return
+	}
+	body.Source = strings.TrimSpace(body.Source)
+	body.Target = strings.TrimSpace(body.Target)
+	if body.Source == "" || body.Target == "" {
+		httpx.WriteJson(w, http.StatusOK, MyType.Resp{Code: 40000, Msg: "需要 source 和 target，例如 {\"source\":\"zchjoe/dockercopilot:local\",\"target\":\"zchjoe/dockercopilot:latest\"}"})
+		return
+	}
+	if appCtx == nil || appCtx.DockerClient == nil {
+		httpx.WriteJson(w, http.StatusOK, MyType.Resp{Code: 50000, Msg: "docker client 未就绪"})
+		return
+	}
+	if err := appCtx.DockerClient.ImageTag(context.Background(), body.Source, body.Target); err != nil {
+		httpx.WriteJson(w, http.StatusOK, MyType.Resp{Code: 50000, Msg: "打标签失败: " + err.Error()})
+		return
+	}
+	logx.Infof("镜像已打标签: %s -> %s", body.Source, body.Target)
+	httpx.WriteJson(w, http.StatusOK, MyType.Resp{
+		Code: 200,
+		Msg:  "success",
+		Data: map[string]string{"source": body.Source, "target": body.Target},
+	})
+}
+
 func RegisterHandlers(engine *rest.Server) {
 	frontFS, err := fs.Sub(embeddedFront, "front")
 	if err != nil {
@@ -150,6 +504,29 @@ func RegisterHandlers(engine *rest.Server) {
 	}
 
 	frontFileServer := http.StripPrefix("/manager", http.FileServer(http.FS(frontFS)))
+
+	// 【本地新增 2026-11-02】首页注入「自动登录」：local 分支已去掉后端密码校验，
+	// 但前端仍会先弹登录框（它只看 localStorage 里有没有 docker_copilot_token）。
+	// 这里在任何 index.html 响应前插一段脚本：没有 token 就静默换取一个再刷新 ⇒ 打开即进。
+	// 键名与前端一致（从打包产物里确认：localStorage.setItem("docker_copilot_token")），
+	// 登录接口是 POST /api/auth（multipart，字段 secretKey）。
+	injectAutoLogin := func(html []byte) []byte {
+		const marker = "docker_copilot_token"
+		if strings.Contains(string(html), marker) {
+			return html
+		}
+		snippet := "<script>\n(function(){\n  try{\n    var K=\"docker_copilot_token\";\n    if(localStorage.getItem(K)) return;\n    var fd=new FormData(); fd.append(\"secretKey\",\"\");\n    fetch(\"/api/auth\",{method:\"POST\",body:fd})\n      .then(function(r){return r.json();})\n      .then(function(d){var j=d&&d.data&&d.data.jwt; if(j){localStorage.setItem(K,j); location.reload();}})\n      .catch(function(){});\n  }catch(e){}\n})();\n</script>\n"
+		return []byte(strings.Replace(string(html), "</body>", snippet+"</body>", 1))
+	}
+	indexHandler := func(w http.ResponseWriter, r *http.Request) {
+		b, err := fs.ReadFile(frontFS, "index.html")
+		if err != nil {
+			frontFileServer.ServeHTTP(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		_, _ = w.Write(injectAutoLogin(b))
+	}
 
 	assetsHandler := http.FileServer(http.FS(frontFS))
 
@@ -167,20 +544,72 @@ func RegisterHandlers(engine *rest.Server) {
 		},
 	)
 
+	// 【本地新增 2026-10-07】设置接口：网页「设置」页读写白名单与检测周期。
 	engine.AddRoutes(
 		[]rest.Route{
 			{
-				Method: http.MethodGet,
-				Path:   "/manager",
-				Handler: func(w http.ResponseWriter, r *http.Request) {
-					frontFileServer.ServeHTTP(w, r)
-				},
+				Method:  http.MethodGet,
+				Path:    "/api/settings",
+				Handler: settingsGetHandler,
+			},
+			{
+				Method:  http.MethodPut,
+				Path:    "/api/settings",
+				Handler: settingsPutHandler,
+			},
+		},
+	)
+
+	// 【本地新增 2026-10-07】飞牛 compose：列表 / 读取 / 保存 / 一键生效。
+	engine.AddRoutes(
+		[]rest.Route{
+			{
+				Method:  http.MethodGet,
+				Path:    "/api/compose",
+				Handler: composeListHandler,
+			},
+			{
+				Method:  http.MethodGet,
+				Path:    "/api/compose/file",
+				Handler: composeGetHandler,
+			},
+			{
+				Method:  http.MethodPut,
+				Path:    "/api/compose/file",
+				Handler: composePutHandler,
+			},
+			{
+				Method:  http.MethodPost,
+				Path:    "/api/compose/apply",
+				Handler: composeApplyHandler,
+			},
+			{
+				Method:  http.MethodPost,
+				Path:    "/api/image/tag",
+				Handler: imageTagHandler,
+			},
+		},
+	)
+
+	engine.AddRoutes(
+		[]rest.Route{
+			{
+				Method:  http.MethodGet,
+				Path:    "/manager",
+				Handler: indexHandler,
 			},
 			{
 				Method: http.MethodGet,
 				Path:   "/manager/:path",
 				Handler: func(w http.ResponseWriter, r *http.Request) {
-					frontFileServer.ServeHTTP(w, r)
+					// 带扩展名的静态资源仍走文件服务；其余（SPA 路由）一律回 index 并注入自动登录
+					if idx := strings.LastIndex(r.URL.Path, "/"); idx >= 0 {
+						if strings.Contains(r.URL.Path[idx:], ".") {
+							frontFileServer.ServeHTTP(w, r)
+							return
+						}
+					}
+					indexHandler(w, r)
 				},
 			},
 			{
@@ -193,6 +622,25 @@ func RegisterHandlers(engine *rest.Server) {
 			{
 				Method: http.MethodGet,
 				Path:   "/assets/:path",
+				Handler: func(w http.ResponseWriter, r *http.Request) {
+					assetsHandler.ServeHTTP(w, r)
+				},
+			},
+			// 【本地新增 2026-10-07】PWA 资源。
+			// index.html 引用了 /logo.png 和 /manifest.json，但上游既没提供这两个文件、
+			// 也没注册对应路由，一直是 404（浏览器控制台能看到）。
+			// 现在文件已放进 front/，这里补上路由；assetsHandler 就是 frontFS 的根，
+			// 请求路径与文件名一致，直接转过去即可。
+			{
+				Method: http.MethodGet,
+				Path:   "/logo.png",
+				Handler: func(w http.ResponseWriter, r *http.Request) {
+					assetsHandler.ServeHTTP(w, r)
+				},
+			},
+			{
+				Method: http.MethodGet,
+				Path:   "/manifest.json",
 				Handler: func(w http.ResponseWriter, r *http.Request) {
 					assetsHandler.ServeHTTP(w, r)
 				},
@@ -226,38 +674,4 @@ func SetupLog(logDir string) error {
 	logx.MustSetup(logConf)
 	logx.AddWriter(logx.NewWriter(os.Stdout))
 	return nil
-}
-
-// parseCheckOnly 解析 CHECK_ONLY（逗号分隔，去空白、去重、忽略空项）。
-// 为空表示"不限制"，即保持上游默认行为（检查全部镜像）。
-func parseCheckOnly(raw string) []string {
-	out := make([]string, 0, 4)
-	seen := map[string]bool{}
-	for _, part := range strings.Split(raw, ",") {
-		p := strings.TrimSpace(part)
-		if p == "" || seen[p] {
-			continue
-		}
-		seen[p] = true
-		out = append(out, p)
-	}
-	return out
-}
-
-// filterImages 按 CHECK_ONLY 过滤镜像列表（子串匹配 ImageName，写 zchjoe/nc-bridge 即可命中 tag 形式）。
-// checkOnly 为空时原样返回。
-func filterImages(list []dctypes.Image, checkOnly []string) []dctypes.Image {
-	if len(checkOnly) == 0 {
-		return list
-	}
-	out := make([]dctypes.Image, 0, len(list))
-	for _, img := range list {
-		for _, want := range checkOnly {
-			if strings.Contains(img.ImageName, want) {
-				out = append(out, img)
-				break
-			}
-		}
-	}
-	return out
 }
