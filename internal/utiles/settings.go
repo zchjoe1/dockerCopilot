@@ -35,6 +35,20 @@ type Settings struct {
 	// CheckCronOthers 慢档周期（不在优先名单里的其余镜像）；空 = 用环境变量
 	// CHECK_CRON_OTHERS 或默认 "30 4 * * *"（每天 4:30）。显式填 off/none/- = 关闭慢档。
 	CheckCronOthers string `json:"checkCronOthers"`
+	// CleanOldImage 更新容器成功后，自动删除**被替换掉的旧镜像**（2026-11-06 新增，默认开）。
+	//
+	// ⚠️ 用 *bool 而不是 bool：老配置文件 /data/settings.json 里没有这个键，
+	//    bool 的零值 false 会把"默认开"变成"默认关"，用户会以为功能坏了。
+	//    nil = 未设置 = 按默认（开）；显式写 false 才关。
+	CleanOldImage *bool `json:"cleanOldImage"`
+}
+
+// CleanOldImageOn 解析"是否清理旧镜像"的**生效值**：未设置 = 开。
+func (s Settings) CleanOldImageOn() bool {
+	if s.CleanOldImage == nil {
+		return true
+	}
+	return *s.CleanOldImage
 }
 
 var (

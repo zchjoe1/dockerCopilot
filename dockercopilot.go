@@ -289,6 +289,7 @@ type settingsView struct {
 	CheckOnly           string `json:"checkOnly"`
 	CheckCron           string `json:"checkCron"`
 	CheckCronOthers     string `json:"checkCronOthers"`
+	CleanOldImage       bool   `json:"cleanOldImage"`
 	EffectiveOnly       string `json:"effectiveOnly"`
 	EffectiveCron       string `json:"effectiveCron"`
 	EffectiveOthersCron string `json:"effectiveOthersCron"`
@@ -306,6 +307,7 @@ func settingsGetHandler(w http.ResponseWriter, r *http.Request) {
 			CheckOnly:           s.CheckOnly,
 			CheckCron:           s.CheckCron,
 			CheckCronOthers:     s.CheckCronOthers,
+			CleanOldImage:       s.CleanOldImageOn(),
 			EffectiveOnly:       effectiveOnly(),
 			EffectiveCron:       effectiveCron(),
 			EffectiveOthersCron: effectiveOthersCron(),
