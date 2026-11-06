@@ -77,7 +77,7 @@ func GetChallengeRequest(URL url.URL) (*http.Request, error) {
 }
 
 func GetBearerHeader(challenge string, imageRef ref.Named, registryAuth string) (string, error) {
-	client := http.Client{}
+	client := *registryClient(20*time.Second, false)
 	authURL, err := GetAuthURL(challenge, imageRef)
 
 	if err != nil {
@@ -183,9 +183,7 @@ func GetRegistryAddress(imageRef string) (string, error) {
 func checkHost(host string) bool {
 	URL := "https://" + host + "/v2/"
 	// 创建带有超时设置的 http.Client
-	client := http.Client{
-		Timeout: 5 * time.Second,
-	}
+	client := *registryClient(5*time.Second, false)
 	// 发送 HEAD 请求
 	resp, err := client.Get(URL)
 	if err != nil {
@@ -209,8 +207,10 @@ func checkHost(host string) bool {
 	return false
 }
 
-// GetTokenDirect 与 GetToken 相同，但挑战地址固定走官方 registry（不走加速站）。
-// 私有镜像在加速站上不存在，挑战 realm 也是加速站自己的 token 端点 ⇒ 即使有凭据也 401。
+// GetTokenDirect 与 GetToken 相同，但**挑战地址固定走官方 registry**（不走加速站）。
+// 为什么需要（2026-11-01，实测）：私有镜像在加速站（docker.1ms.run 等）上不存在，
+// 拿到的挑战 realm 也是加速站自己的 token 端点 ⇒ 即使挂好凭据也永远 401。
+// 只要该镜像有凭据，token 必须向官方 registry 要。
 func GetTokenDirect(image types.Image, registryAuth string) (string, error) {
 	normalizedRef, err := ref.ParseNormalizedNamed(image.ImageName)
 	if err != nil {

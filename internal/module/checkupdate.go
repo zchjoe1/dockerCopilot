@@ -16,6 +16,10 @@ import (
 	"time"
 )
 
+// 2026-11-01：加 Status/Err（与上游 origin/latest 对齐）。
+// 原来只有 NeedUpdate 一个 bool，而"检查失败"（例如私有仓匿名取 manifest 被 401）是直接
+// return、什么都不写 ⇒ 前端既不说"有更新"也不说"已最新"，用户看到的就是"这个镜像没有通知"。
+// 现在三类结果都落一条记录：Status=update 有更新 / ok 已最新 / error 检查失败（Err 写原因）。
 type ImageCheckList struct {
 	NeedUpdate bool
 	Status     string
