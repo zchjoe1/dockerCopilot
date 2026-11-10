@@ -65,7 +65,13 @@ func RestoreContainer(ctx *svc.ServiceContext, filename string, taskID string) e
 			logx.Errorf("Failed to inspect container: %v", err)
 			return err
 		}
-		reader, err := ctx.DockerClient.ImagePull(context.TODO(), containerInfo.Config.Image, image.PullOptions{})
+		/* 2026-11-10：与 updatecontainer 同一处修复 —— 恢复备份时拉镜像也要带凭据，
+		   否则私有仓镜像（如 zchjoe/nc-bridge）恢复必然失败。 */
+		restorePullOpts := image.PullOptions{}
+		if a := registryAuthForPull(containerInfo.Config.Image); a != "" {
+			restorePullOpts.RegistryAuth = a
+		}
+		reader, err := ctx.DockerClient.ImagePull(context.TODO(), containerInfo.Config.Image, restorePullOpts)
 		if err != nil {
 			backupList = append(backupList, containerInfo.Config.Image+"拉取镜像出现错误"+err.Error())
 			logx.Errorf("Failed to pull image: %v", err)
