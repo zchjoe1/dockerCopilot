@@ -2,12 +2,15 @@ package utiles
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/api/types/image"
 	"github.com/docker/docker/api/types/network"
 	dockerMsgType "github.com/docker/docker/pkg/jsonmessage"
+	"github.com/onlyLTY/dockerCopilot/internal/module"
 	"github.com/onlyLTY/dockerCopilot/internal/svc"
 	"github.com/zeromicro/go-zero/core/logx"
 	"io"
@@ -43,7 +46,18 @@ func UpdateContainer(serviceContext *svc.ServiceContext, id string, name string,
 	oldTaskProgress.DetailMsg = "正在拉取新镜像"
 	serviceContext.UpdateProgress(taskID, oldTaskProgress)
 	serviceContext.DockerClient.NegotiateAPIVersion(ctx)
-	reader, err := serviceContext.DockerClient.ImagePull(ctx, imageNameAndTag, image.PullOptions{})
+	/* ===== 2026-11-10：拉取也要带凭据 =====
+	   现象：私有仓（zchjoe/nc-bridge）在 dc 里能看到「有更新」，点更新却失败：
+	       pull access denied for zchjoe/nc-bridge, may require 'docker login'
+	   原因：**检测**那步早就改过（ea46863：checkSingleImage 带 docker 凭据取 manifest），
+	         但**拉取**这步一直是空的 image.PullOptions{} —— 靠宿主机 Docker 守护进程的登录态。
+	         dc 容器里有凭据、宿主机没有 ⇒ 能查出更新、拉不动。
+	   改法：把同一份凭据以 X-Registry-Auth 传给 daemon；取不到凭据时行为与原来完全一致。 */
+	pullOpts := image.PullOptions{}
+	if a := registryAuthForPull(imageNameAndTag); a != "" {
+		pullOpts.RegistryAuth = a
+	}
+	reader, err := serviceContext.DockerClient.ImagePull(ctx, imageNameAndTag, pullOpts)
 	if err != nil {
 		oldTaskProgress.Message = "拉取镜像失败"
 		oldTaskProgress.DetailMsg = err.Error()
@@ -240,4 +254,34 @@ func decodePullResp(reader io.Reader, ctx *svc.ServiceContext, taskID string) (e
 			logx.Infof("拉取镜像进度\t %s: %s\n", msg.Status, msg.Progress)
 		}
 	}
+}
+
+/* registryAuthForPull 把 dc 自己读到的 docker 凭据转成 Docker API 要的
+   X-Registry-Auth 形态：**base64url(JSON{username,password,serveraddress})**。
+
+   ⚠️ module.AuthForWithSource 返回的是 base64(user:pass)（检测路径拿它拼 Basic 头），
+      两种编码不通用：直接塞给 ImagePull 会被 daemon 当成"没有凭据"。
+   ⚠️ 取不到 / 解不开就返回空串，让调用方走匿名拉取（与改动前行为一致，不引入新失败面）。 */
+func registryAuthForPull(imageNameAndTag string) string {
+	auth, _ := module.AuthForWithSource(imageNameAndTag)
+	if auth == "" {
+		return ""
+	}
+	raw, err := base64.StdEncoding.DecodeString(auth)
+	if err != nil {
+		return ""
+	}
+	user, pass, ok := strings.Cut(string(raw), ":")
+	if !ok || user == "" {
+		return ""
+	}
+	cfg, err := json.Marshal(map[string]string{
+		"username":      user,
+		"password":      pass,
+		"serveraddress": "https://index.docker.io/v1/",
+	})
+	if err != nil {
+		return ""
+	}
+	return base64.URLEncoding.EncodeToString(cfg)
 }
