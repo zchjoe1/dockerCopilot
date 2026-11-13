@@ -1,8 +1,12 @@
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
+import { beforeEach } from 'node:test';
 import { createApp } from '../server/app.ts';
+import { resetMock } from '../server/mock.ts';
 
 const app = createApp({ mock: true, sampleMs: 10000 });
+
+beforeEach(() => resetMock());
 
 describe('dc-ts API（mock 模式）', () => {
   test('health 返回模式与采样周期', async () => {
@@ -82,17 +86,24 @@ describe('dc-ts API（mock 模式）', () => {
     assert.equal(ok.status, 200);
   });
 
-  test('更新接口在 mock 下返回 ok（真实模式为 501）', async () => {
+  test('更新接口在 mock 下返回 jobId，且任务可查询', async () => {
     const res = await app.request('/api/containers/mock0/update', { method: 'POST' });
     assert.equal(res.status, 200);
-    const body = (await res.json()) as { ok: boolean; action: string };
+    const body = (await res.json()) as { ok: boolean; jobId: string };
     assert.equal(body.ok, true);
-    assert.equal(body.action, 'update');
+    assert.ok(body.jobId);
+    const job = (await (await app.request(`/api/jobs/${body.jobId}`)).json()) as { status: string; events: unknown[] };
+    assert.equal(job.status, 'done');
+    assert.ok(job.events.length >= 3);
   });
 
-  test('updates 占位接口说明未移植', async () => {
-    const body = (await (await app.request('/api/updates')).json()) as { pending: unknown[]; note: string };
-    assert.equal(body.pending.length, 0);
-    assert.match(body.note, /尚未移植/);
+  test('updates 在 mock 下返回待更新列表', async () => {
+    const body = (await (await app.request('/api/updates')).json()) as {
+      pending: Array<{ image: string; name: string }>;
+      mode: string;
+    };
+    assert.equal(body.mode, 'mock');
+    assert.equal(body.pending.length, 1);
+    assert.equal(body.pending[0].name, 'dsh-harness');
   });
 });

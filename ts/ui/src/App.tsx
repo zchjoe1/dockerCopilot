@@ -119,14 +119,34 @@ export default function App() {
     setBusy(`${id}:${action}`);
     try {
       const res = await fetch(`/api/containers/${id}/${action}`, { method: 'POST' });
-      const data = (await res.json()) as { ok?: boolean; error?: string };
+      const data = (await res.json()) as { ok?: boolean; error?: string; jobId?: string };
       if (!res.ok || data.error) throw new Error(data.error || `HTTP ${res.status}`);
-      notify(`${ACT_LABEL[action] ?? '已执行'}：${rows.find((r) => r.id === id)?.name ?? id}`);
+      if (action === 'update' && data.jobId) {
+        await watchJob(data.jobId);
+      } else {
+        notify(`${ACT_LABEL[action] ?? '已执行'}：${rows.find((r) => r.id === id)?.name ?? id}`);
+      }
       await load();
     } catch (err) {
       notify(`操作失败：${(err as Error).message}`);
     } finally {
       setBusy(null);
+    }
+  };
+
+  /** 轮询更新任务，把最新一步显示在 toast 上。 */
+  const watchJob = async (jobId: string) => {
+    for (let i = 0; i < 600; i += 1) {
+      const res = await fetch(`/api/jobs/${jobId}`);
+      const job = (await res.json()) as {
+        status: string; error?: string;
+        events: Array<{ message: string }>;
+      };
+      const lastMsg = job.events[job.events.length - 1]?.message ?? '处理中…';
+      if (job.status === 'error') throw new Error(job.error ?? lastMsg);
+      if (job.status === 'done') { notify(`更新完成：${lastMsg}`); return; }
+      notify(lastMsg);
+      await new Promise((r) => setTimeout(r, 600));
     }
   };
 

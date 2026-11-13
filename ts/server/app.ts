@@ -4,6 +4,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { act, inspectOne, listContainers, renameOne, type ContainerRow, type StatSample } from './docker.ts';
 import { mockAct, mockInspect, mockList, mockRename } from './mock.ts';
+import { applyVerdicts, checkImages, pendingUpdates } from './updates.ts';
+import { getJob, newJob, runUpdate } from './update.ts';
 
 export type AppOptions = {
   mock: boolean;
@@ -32,13 +34,19 @@ export function createApp(opts: AppOptions) {
 
   app.get('/api/health', (c) => c.json({ ok: true, mode: mock ? 'mock' : 'docker', sampleMs: opts.sampleMs ?? 10000 }));
 
-  app.get('/api/updates', (c) =>
-    c.json({
-      checkedAt: null,
-      pending: [],
-      note: '更新检测尚未移植：镜像 digest 比对与重建流程还在计划里（见 ts/README.md）。',
-    }),
-  );
+  app.get('/api/updates', async (c) => {
+    try {
+      if (mock) {
+        const pending = mockList().filter((r) => r.hasUpdate).map((r) => ({ image: r.image, name: r.name, hasUpdate: true }));
+        return c.json({ checkedAt: Date.now(), pending, mode: 'mock' });
+      }
+      const images = (await listContainers()).map((r) => r.image);
+      await checkImages(images);
+      return c.json({ checkedAt: Date.now(), pending: pendingUpdates(), mode: 'docker' });
+    } catch (err) {
+      return c.json({ error: (err as Error).message }, 500);
+    }
+  });
 
   app.get('/api/containers', async (c) => {
     try {
@@ -79,10 +87,34 @@ export function createApp(opts: AppOptions) {
     }
   });
 
-  app.post('/api/containers/:id/update', (c) => {
+  app.post('/api/containers/:id/update', async (c) => {
     const id = c.req.param('id');
-    if (mock) return c.json({ ok: true, id, action: 'update' });
-    return c.json({ error: '更新检测尚未移植：镜像 digest 比对与重建流程还在计划里（见 ts/README.md）' }, 501);
+    try {
+      if (mock) {
+        const row = mockList().find((r) => r.id === id);
+        const job = newJob(id, row?.name ?? id, row?.image ?? '');
+        job.events.push(
+          { step: 'pulling', message: '拉取（mock）', at: Date.now() },
+          { step: 'creating', message: '创建新容器（mock）', at: Date.now() },
+          { step: 'done', message: '更新完成（mock）', at: Date.now() },
+        );
+        job.status = 'done';
+        job.endedAt = Date.now();
+        return c.json({ ok: true, jobId: job.id });
+      }
+      const info = await inspectOne(id);
+      const job = newJob(id, info.name, info.image);
+      void runUpdate(job);
+      return c.json({ ok: true, jobId: job.id }, 202);
+    } catch (err) {
+      return c.json({ error: (err as Error).message }, 500);
+    }
+  });
+
+  app.get('/api/jobs/:id', (c) => {
+    const job = getJob(c.req.param('id'));
+    if (!job) return c.json({ error: 'not found' }, 404);
+    return c.json(job);
   });
 
   app.post('/api/containers/:id/:action', async (c) => {

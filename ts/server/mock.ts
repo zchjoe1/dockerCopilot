@@ -28,7 +28,15 @@ const seeds: Seed[] = [
   { name: 'codebuddy2api-new', image: 'ghcr.io/maiphucg/langchain-api:latest', days: 3.0, cpu: 0.0, memMB: 33.4 },
 ];
 
+const pristine = structuredClone(seeds);
+
 const state = new Map<string, ContainerRow['state']>();
+
+export function resetMock() {
+  seeds.length = 0;
+  seeds.push(...structuredClone(pristine));
+  state.clear();
+}
 
 export function mockList(): ContainerRow[] {
   return seeds.map((s, i) => {
