@@ -57,6 +57,13 @@ export function mockAct(id: string, action: 'start' | 'stop' | 'restart') {
   return cur;
 }
 
+export function mockRename(id: string, name: string) {
+  const row = mockList().find((r) => r.id === id);
+  if (!row) return false;
+  seeds[Number(id.replace('mock', ''))].name = name;
+  return true;
+}
+
 export function mockInspect(id: string) {
   const row = mockList().find((r) => r.id === id);
   if (!row) return null;

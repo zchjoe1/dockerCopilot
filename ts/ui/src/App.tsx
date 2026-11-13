@@ -41,6 +41,14 @@ function fmtUp(sec: number): string {
   return `${Math.max(1, Math.floor(sec / 60))}m`;
 }
 
+const ACT_LABEL: Record<string, string> = {
+  start: '已启动',
+  stop: '已停止',
+  restart: '已重启',
+  update: '已开始更新',
+  rename: '已重命名',
+};
+
 const IconGrid = () => (
   <svg viewBox="0 0 24 24">
     <rect x="3.5" y="3.5" width="7" height="7" rx="1" />
@@ -58,6 +66,7 @@ export default function App() {
   const [mode, setMode] = useState<string>('');
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [sheetOpen, setSheetOpen] = useState(false);
   const timer = useRef<number | null>(null);
 
   const load = useCallback(async () => {
@@ -101,25 +110,102 @@ export default function App() {
 
   const selected = useMemo(() => rows.find((r) => r.id === sel) ?? null, [rows, sel]);
 
+  const notify = (msg: string) => {
+    setToast(msg);
+    window.setTimeout(() => setToast(null), 2600);
+  };
+
   const run = async (id: string, action: 'start' | 'stop' | 'restart' | 'update') => {
     setBusy(`${id}:${action}`);
     try {
       const res = await fetch(`/api/containers/${id}/${action}`, { method: 'POST' });
       const data = (await res.json()) as { ok?: boolean; error?: string };
       if (!res.ok || data.error) throw new Error(data.error || `HTTP ${res.status}`);
-      setToast(`${action === 'update' ? '已开始更新' : action === 'stop' ? '已停止' : action === 'restart' ? '已重启' : '已启动'}：${rows.find((r) => r.id === id)?.name ?? id}`);
+      notify(`${ACT_LABEL[action] ?? '已执行'}：${rows.find((r) => r.id === id)?.name ?? id}`);
       await load();
     } catch (err) {
-      setToast(`操作失败：${(err as Error).message}`);
+      notify(`操作失败：${(err as Error).message}`);
     } finally {
       setBusy(null);
-      window.setTimeout(() => setToast(null), 2600);
+    }
+  };
+
+  const rename = async (id: string, current: string) => {
+    const next = window.prompt('新的容器名', current);
+    if (!next || next.trim() === current) return;
+    setBusy(`${id}:rename`);
+    try {
+      const res = await fetch(`/api/containers/${id}/rename`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ name: next.trim() }),
+      });
+      const data = (await res.json()) as { ok?: boolean; error?: string };
+      if (!res.ok || data.error) throw new Error(data.error || `HTTP ${res.status}`);
+      notify(`${ACT_LABEL.rename}：${next.trim()}`);
+      await load();
+    } catch (err) {
+      notify(`重命名失败：${(err as Error).message}`);
+    } finally {
+      setBusy(null);
     }
   };
 
   const updates = rows.filter((r) => r.hasUpdate);
   const totalMem = rows.reduce((n, r) => n + (r.memBytes ?? 0), 0);
   const maxMem = Math.max(...rows.map((r) => r.memBytes ?? 0), 1);
+
+  const inspector = selected ? (
+    <>
+      <div className="hd">
+        <div className="r1">
+          <span className={`led${selected.state === 'running' ? '' : ' off'}`} style={{ flex: 'none' }} />
+          <span>{selected.state === 'running' ? '运行中' : '已停止'} · {fmtUp(selected.uptimeSec)}</span>
+          <span className="sp" />
+          <button className="mini" onClick={() => rename(selected.id, selected.name)} disabled={busy !== null}>重命名</button>
+          <button className="mini close" onClick={() => setSheetOpen(false)} aria-label="关闭">✕</button>
+        </div>
+        <h2>{selected.name}</h2>
+        <div className="im">{selected.image}</div>
+      </div>
+
+      <div className="bd">
+        <div className="kpi">
+          <div><span>CPU</span><b>{(selected.cpuPct ?? 0).toFixed(1)}<em>%</em></b></div>
+          <div><span>内存</span><b>{fmtMem(selected.memBytes)}</b></div>
+        </div>
+
+        <div className="sec">
+          <div className="lb"><span>镜像</span><span>{selected.hasUpdate ? '可更新' : '最新'}</span></div>
+          <div className="note">
+            <div>{selected.hasUpdate ? '远端 digest 与本地不一致' : '镜像与远端一致'}</div>
+            <div>{detail?.imageId ? `${detail.imageId.slice(0, 20)}…` : '—'}</div>
+          </div>
+        </div>
+
+        <div className="sec">
+          <div className="lb"><span>运行信息</span></div>
+          <div className="info">
+            <div><span>重启策略</span><b>{detail?.restartPolicy ?? '—'}</b></div>
+            <div><span>状态</span><b>{detail?.state ?? selected.state}</b></div>
+            <div><span>容器 ID</span><b>{selected.id.slice(0, 12)}</b></div>
+          </div>
+        </div>
+
+        <div className="actions">
+          <button className="b" disabled={busy !== null} onClick={() => run(selected.id, 'restart')}>重启</button>
+          <button className="b" disabled={busy !== null} onClick={() => run(selected.id, 'stop')}>停止</button>
+          {selected.hasUpdate && (
+            <button className="b go" disabled={busy !== null} onClick={() => run(selected.id, 'update')}>拉取并重建</button>
+          )}
+        </div>
+      </div>
+
+      <div className="ft"><span>{selected.id.slice(0, 12)}</span></div>
+    </>
+  ) : (
+    <div className="hd"><span style={{ color: 'var(--fg-3)', fontSize: 11 }}>加载中…</span></div>
+  );
 
   return (
     <div className="app">
@@ -165,7 +251,7 @@ export default function App() {
               <b>{updates[0].name}</b> 有新镜像可用 · <span className="num" style={{ fontSize: 10.5, color: '#8C7C55' }}>{updates[0].image}</span>
             </span>
             <span className="sp" />
-            <a className="lk" href="#" onClick={(e) => { e.preventDefault(); setSel(updates[0].id); }}>
+            <a className="lk" href="#" onClick={(e) => { e.preventDefault(); setSel(updates[0].id); setSheetOpen(true); }}>
               处理<svg viewBox="0 0 24 24"><path d="m9 6 6 6-6 6" /></svg>
             </a>
           </div>
@@ -173,9 +259,7 @@ export default function App() {
 
         <div className="h">
           <h1>容器控制墙</h1>
-          <p>
-            已加载 {rows.length} / {rows.length} 个容器 · {updates.length} 个待处理 · 按内存排序
-          </p>
+          <p>已加载 {rows.length} 个容器 · {updates.length} 个待处理 · 按内存排序</p>
         </div>
 
         <div className="wall">
@@ -187,7 +271,7 @@ export default function App() {
               <div
                 key={r.id}
                 className={`tile${r.hasUpdate ? ' upd' : ''}${sel === r.id ? ' sel' : ''}`}
-                onClick={() => setSel(r.id)}
+                onClick={() => { setSel(r.id); setSheetOpen(true); }}
               >
                 <div className="r1">
                   <span className={`led${r.state === 'running' ? '' : ' off'}`} />
@@ -230,64 +314,14 @@ export default function App() {
         </div>
       </main>
 
-      <aside className="insp">
-        {selected ? (
-          <>
-            <div className="hd">
-              <div className="r1">
-                <span
-                  className="led"
-                  style={{
-                    display: 'inline-block', width: 5, height: 5, borderRadius: '50%',
-                    background: selected.state === 'running' ? 'var(--green)' : 'var(--red)',
-                  }}
-                />
-                <span>
-                  {selected.state === 'running' ? '运行中' : '已停止'} · {fmtUp(selected.uptimeSec)}
-                </span>
-              </div>
-              <h2>{selected.name}</h2>
-              <div className="im">{selected.image}</div>
-            </div>
+      <aside className="insp panel">{inspector}</aside>
 
-            <div className="bd">
-              <div className="kpi">
-                <div><span>CPU</span><b>{(selected.cpuPct ?? 0).toFixed(1)}<em>%</em></b></div>
-                <div><span>内存</span><b>{fmtMem(selected.memBytes)}</b></div>
-              </div>
-
-              <div className="sec">
-                <div className="lb"><span>镜像</span><span>{selected.hasUpdate ? '可更新' : '最新'}</span></div>
-                <div className="note">
-                  <div>{selected.hasUpdate ? '远端 digest 与本地不一致' : '镜像与远端一致'}</div>
-                  <div>{detail?.imageId ? `${detail.imageId.slice(0, 16)}…` : '—'}</div>
-                </div>
-              </div>
-
-              <div className="sec">
-                <div className="lb"><span>运行信息</span></div>
-                <div className="info">
-                  <div><span>重启策略</span><b>{detail?.restartPolicy ?? '—'}</b></div>
-                  <div><span>状态</span><b>{detail?.state ?? selected.state}</b></div>
-                  <div><span>容器 ID</span><b>{selected.id.slice(0, 12)}</b></div>
-                </div>
-              </div>
-
-              <div className="actions">
-                <button className="b" disabled={busy !== null} onClick={() => run(selected.id, 'restart')}>重启</button>
-                <button className="b" disabled={busy !== null} onClick={() => run(selected.id, 'stop')}>停止</button>
-                {selected.hasUpdate && (
-                  <button className="b go" disabled={busy !== null} onClick={() => run(selected.id, 'update')}>拉取并重建</button>
-                )}
-              </div>
-            </div>
-
-            <div className="ft"><span>{selected.id.slice(0, 12)}</span></div>
-          </>
-        ) : (
-          <div className="hd"><span style={{ color: 'var(--fg-3)', fontSize: 11 }}>加载中…</span></div>
-        )}
-      </aside>
+      {sheetOpen && (
+        <>
+          <div className="backdrop" onClick={() => setSheetOpen(false)} />
+          <div className="sheet panel">{inspector}</div>
+        </>
+      )}
 
       {toast && <div className="toast">{toast}</div>}
     </div>

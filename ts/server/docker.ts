@@ -84,6 +84,11 @@ export async function inspectOne(id: string) {
   };
 }
 
+export async function renameOne(id: string, name: string) {
+  await docker.getContainer(id).rename({ name });
+  return true;
+}
+
 export async function act(id: string, action: 'start' | 'stop' | 'restart') {
   const c = docker.getContainer(id);
   if (action === 'start') await c.start();
