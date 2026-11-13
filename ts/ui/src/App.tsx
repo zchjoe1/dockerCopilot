@@ -2,8 +2,10 @@ import { useEffect, useState, type ReactNode } from 'react';
 import Containers from './pages/Containers';
 import Images from './pages/Images';
 import Settings from './pages/Settings';
+import Backups from './pages/Backups';
+import Compose from './pages/Compose';
 
-type Page = 'containers' | 'images' | 'settings';
+type Page = 'containers' | 'images' | 'backups' | 'compose' | 'settings';
 
 const PAGES: Array<{ key: Page; label: string; icon: ReactNode }> = [
   {
@@ -25,6 +27,27 @@ const PAGES: Array<{ key: Page; label: string; icon: ReactNode }> = [
       <svg viewBox="0 0 24 24">
         <path d="M12 2.8 21 7.6v8.8L12 21.2 3 16.4V7.6z" />
         <path d="M3 7.6 12 12.4l9-4.8M12 12.4v8.8" />
+      </svg>
+    ),
+  },
+  {
+    key: 'backups',
+    label: '备份',
+    icon: (
+      <svg viewBox="0 0 24 24">
+        <rect x="3.5" y="6" width="17" height="13" rx="2" />
+        <path d="M3.5 10h17M9 14.5h6" />
+      </svg>
+    ),
+  },
+  {
+    key: 'compose',
+    label: 'Compose',
+    icon: (
+      <svg viewBox="0 0 24 24">
+        <path d="M12 3.5 21 8l-9 4.5L3 8z" />
+        <path d="M3 12.2 12 16.7l9-4.5" />
+        <path d="M3 16.4 12 20.9l9-4.5" />
       </svg>
     ),
   },
@@ -79,6 +102,8 @@ export default function App() {
 
       {page === 'containers' && <Containers />}
       {page === 'images' && <Images />}
+      {page === 'backups' && <Backups />}
+      {page === 'compose' && <Compose />}
       {page === 'settings' && <Settings />}
     </div>
   );

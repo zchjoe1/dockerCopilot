@@ -3,11 +3,13 @@ import { serveStatic } from '@hono/node-server/serve-static';
 import fs from 'node:fs';
 import path from 'node:path';
 import { act, inspectOne, listContainers, renameOne, type ContainerRow, type StatSample } from './docker.ts';
-import { mockAct, mockImages, mockInspect, mockList, mockRename } from './mock.ts';
+import { MOCK_COMPOSE, mockAct, mockBackups, mockComposeProjects, mockCreateBackup, mockImages, mockInspect, mockList, mockRename } from './mock.ts';
 import { applyVerdicts, checkImages, pendingUpdates } from './updates.ts';
 import { getJob, newJob, runUpdate } from './update.ts';
 import { listImages, removeImage, tagImage } from './images.ts';
 import { loadSettings, saveSettings, validateSettings } from './settings.ts';
+import { createBackup, listBackups, removeBackup, restoreBackup } from './backups.ts';
+import { applyProject, listProjects, readProject, saveProject } from './compose.ts';
 
 export type AppOptions = {
   mock: boolean;
@@ -176,6 +178,90 @@ export function createApp(opts: AppOptions) {
     if (!res.ok) return c.json({ error: res.error }, 400);
     saveSettings(res.value);
     return c.json(res.value);
+  });
+
+
+  // ── 备份 ─────────────────────────────────────────────
+  app.get('/api/backups', (c) => {
+    try {
+      return c.json({ items: mock ? mockBackups : listBackups() });
+    } catch (err) {
+      return c.json({ error: (err as Error).message }, 500);
+    }
+  });
+
+  app.post('/api/backups/:containerId', async (c) => {
+    const id = c.req.param('containerId');
+    try {
+      const item = mock ? mockCreateBackup(id) : await createBackup(id);
+      return c.json({ ok: true, item });
+    } catch (err) {
+      return c.json({ error: (err as Error).message }, 500);
+    }
+  });
+
+  app.post('/api/backups/:file/restore', async (c) => {
+    const file = c.req.param('file');
+    if (mock) return c.json({ ok: true, name: 'restored-mock' });
+    try {
+      return c.json({ ok: true, ...(await restoreBackup(file)) });
+    } catch (err) {
+      return c.json({ error: (err as Error).message }, 500);
+    }
+  });
+
+  app.delete('/api/backups/:file', (c) => {
+    const file = c.req.param('file');
+    try {
+      if (!mock) removeBackup(file);
+      else {
+        const i = mockBackups.findIndex((b) => b.file === file);
+        if (i >= 0) mockBackups.splice(i, 1);
+      }
+      return c.json({ ok: true });
+    } catch (err) {
+      return c.json({ error: (err as Error).message }, 500);
+    }
+  });
+
+  // ── Compose ──────────────────────────────────────────
+  app.get('/api/compose', (c) => {
+    try {
+      return c.json({ root: mock ? '/vol1/1000/docker（mock）' : undefined, items: mock ? mockComposeProjects() : listProjects() });
+    } catch (err) {
+      return c.json({ error: (err as Error).message }, 500);
+    }
+  });
+
+  app.get('/api/compose/file', (c) => {
+    const file = c.req.query('file');
+    if (!file) return c.json({ error: 'file 必填' }, 400);
+    try {
+      return c.json({ file, content: mock ? MOCK_COMPOSE : readProject(file) });
+    } catch (err) {
+      return c.json({ error: (err as Error).message }, 500);
+    }
+  });
+
+  app.put('/api/compose/file', async (c) => {
+    let body: { file?: string; content?: string } = {};
+    try { body = (await c.req.json()) as typeof body; } catch { return c.json({ error: 'invalid json' }, 400); }
+    if (!body.file || typeof body.content !== 'string') return c.json({ error: 'file 与 content 必填' }, 400);
+    try {
+      if (!mock) saveProject(body.file, body.content);
+      return c.json({ ok: true });
+    } catch (err) {
+      return c.json({ error: (err as Error).message }, 500);
+    }
+  });
+
+  app.post('/api/compose/apply', async (c) => {
+    let body: { file?: string } = {};
+    try { body = (await c.req.json()) as typeof body; } catch { return c.json({ error: 'invalid json' }, 400); }
+    if (!body.file) return c.json({ error: 'file 必填' }, 400);
+    if (mock) return c.json({ ok: true, code: 0, output: '（mock）服务已启动' });
+    const res = await applyProject(body.file);
+    return c.json({ ok: res.code === 0, ...res }, res.code === 0 ? 200 : 500);
   });
 
   // 静态资源（vite 产物）。测试环境不挂，避免依赖 dist 存在。

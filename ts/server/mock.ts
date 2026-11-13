@@ -113,3 +113,41 @@ function hash(s: string) {
   for (let i = 0; i < s.length; i += 1) h = (h * 31 + s.charCodeAt(i)) | 0;
   return h;
 }
+
+// ── 备份与 compose 的 mock ─────────────────────
+export const mockBackups: Array<{ file: string; name: string; image: string; createdAt: number; size: number }> = [];
+
+export function mockCreateBackup(containerId: string) {
+  const row = mockList().find((r) => r.id === containerId);
+  if (!row) throw new Error('容器不存在');
+  const now = Date.now();
+  const item = {
+    file: `${row?.name ?? containerId}-${new Date(now).toISOString().replace(/[:.]/g, '-')}.json`,
+    name: row?.name ?? containerId,
+    image: row?.image ?? '',
+    createdAt: now,
+    size: 2048 + Math.floor(Math.random() * 4096),
+  };
+  mockBackups.unshift(item);
+  return item;
+}
+
+export function mockComposeProjects() {
+  const d = '/vol1/1000/docker/deepseek-harness';
+  return [
+    { name: 'deepseek-harness', dir: d, file: d + '/compose.yaml', modified: Date.now() - 3600_000 },
+    { name: 'dockercopilot', dir: '/vol1/1000/docker/dockercopilot', file: '/vol1/1000/docker/dockercopilot/compose.yaml', modified: Date.now() - 86400_000 },
+  ];
+}
+
+export const MOCK_COMPOSE = `services:
+  dsh-harness:
+    image: ghcr.io/smanx/deepseek-harness:latest
+    container_name: dsh-harness
+    restart: unless-stopped
+    network_mode: host
+    volumes:
+      - ./data:/root/.dsh
+    environment:
+      TZ: Asia/Shanghai
+`;

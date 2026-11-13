@@ -162,6 +162,20 @@ export default function Containers() {
     }
   };
 
+  const backup = async (id: string) => {
+    setBusy(`${id}:backup`);
+    try {
+      const res = await fetch(`/api/backups/${id}`, { method: 'POST' });
+      const data = (await res.json()) as { ok?: boolean; item?: { file: string }; error?: string };
+      if (!res.ok || data.error) throw new Error(data.error || `HTTP ${res.status}`);
+      notify(`已备份：${data.item?.file ?? 'ok'}`);
+    } catch (err) {
+      notify(`备份失败：${(err as Error).message}`);
+    } finally {
+      setBusy(null);
+    }
+  };
+
   const updates = rows.filter((r) => r.hasUpdate);
   const totalMem = rows.reduce((n, r) => n + (r.memBytes ?? 0), 0);
   const maxMem = Math.max(...rows.map((r) => r.memBytes ?? 0), 1);
@@ -173,6 +187,7 @@ export default function Containers() {
           <span className={`led${selected.state === 'running' ? '' : ' off'}`} style={{ flex: 'none' }} />
           <span>{selected.state === 'running' ? '运行中' : '已停止'} · {fmtUp(selected.uptimeSec)}</span>
           <span className="sp" />
+          <button className="mini" onClick={() => backup(selected.id)} disabled={busy !== null}>备份</button>
           <button className="mini" onClick={() => rename(selected.id, selected.name)} disabled={busy !== null}>重命名</button>
           <button className="mini close" onClick={() => setSheetOpen(false)} aria-label="关闭">✕</button>
         </div>
