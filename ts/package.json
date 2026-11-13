@@ -1,0 +1,32 @@
+{
+  "name": "dc-ts",
+  "private": true,
+  "type": "module",
+  "description": "Docker Copilot 的 TypeScript 重写版：Node + Hono + dockerode 服务端，Vite + React 前端",
+  "scripts": {
+    "dev": "MOCK=1 tsx watch server/index.ts",
+    "dev:ui": "vite",
+    "build:ui": "vite build",
+    "build:server": "esbuild server/index.ts --bundle --platform=node --format=esm --outfile=dist-server/index.mjs --external:dockerode --external:ssh2",
+    "build": "npm run build:ui && npm run build:server",
+    "start": "node dist-server/index.mjs"
+  },
+  "dependencies": {
+    "@hono/node-server": "^1.13.7",
+    "dockerode": "^4.0.4",
+    "hono": "^4.6.14"
+  },
+  "devDependencies": {
+    "@types/dockerode": "^3.3.34",
+    "@types/node": "^22.10.2",
+    "@types/react": "^18.3.17",
+    "@types/react-dom": "^18.3.5",
+    "@vitejs/plugin-react": "^4.3.4",
+    "esbuild": "^0.24.2",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.2",
+    "vite": "^5.4.11"
+  }
+}
