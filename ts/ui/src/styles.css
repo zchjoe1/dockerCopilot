@@ -10,7 +10,8 @@
   html,body{height:100%}
   body{background:var(--bg);color:var(--fg);font:13px/1.45 var(--sans);-webkit-font-smoothing:antialiased;overflow:hidden}
   .num{font-family:var(--mono);font-variant-numeric:tabular-nums;letter-spacing:-.01em}
-  .app{display:grid;grid-template-columns:54px minmax(0,1fr) 356px;height:100vh}
+  .app{display:grid;grid-template-columns:54px minmax(0,1fr);height:100vh}
+.shell{display:grid;grid-template-columns:minmax(0,1fr) 356px;height:100vh;min-width:0}
 
   /* 轨 */
   .rail{border-right:1px solid var(--line);display:flex;flex-direction:column;align-items:center;gap:3px;padding:12px 0}
@@ -117,11 +118,11 @@
   .panel .ft button{background:none;border:0;color:#9E5040;font:inherit;font-family:var(--sans);font-size:10px;cursor:pointer}
 
   @media (max-width:1240px){
-    .app{grid-template-columns:54px minmax(0,1fr) 320px}
+    .shell{grid-template-columns:minmax(0,1fr) 320px}
     .wall{grid-template-columns:repeat(3,minmax(0,1fr))}
   }
   @media (max-width:1020px){
-    .app{grid-template-columns:54px minmax(0,1fr)}
+    .shell{grid-template-columns:minmax(0,1fr)}
     .insp{display:none}
     .wall{grid-template-columns:repeat(4,minmax(0,1fr))}
   }
@@ -156,3 +157,53 @@
   .sheet .bd{flex:1;overflow-y:auto}
   .sheet .actions{padding-bottom:14px}
 }
+
+/* ── 通用页面元素 ─────────────────────────────── */
+.search{display:flex;align-items:center;gap:7px;height:28px;padding:0 9px;border:1px solid var(--line);border-radius:4px;background:#0E1110}
+.search svg{width:12px;height:12px;stroke:var(--fg-3);fill:none;stroke-width:1.7}
+.search input{border:0;outline:0;background:none;font:inherit;font-size:11.5px;color:var(--fg);width:100%}
+.search input::placeholder{color:#4E544B}
+
+.ptable{margin:12px 18px 0;border:1px solid var(--line);border-radius:4px;background:var(--panel);overflow:hidden}
+.phead,.prow{display:grid;grid-template-columns:minmax(0,1fr) 90px 64px 84px;align-items:center;gap:12px;padding:0 12px}
+.phead{height:30px;border-bottom:1px solid var(--line);background:#0C0D0C;font-size:10.5px;color:#6C716B}
+.prow{height:52px;border-bottom:1px solid var(--line-2)}
+.prow:last-of-type{border-bottom:0}
+.prow:hover{background:#131614}
+.pname{min-width:0;display:flex;flex-direction:column;gap:2px}
+.pname b{font-size:12px;font-weight:550;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.pname span{font-family:var(--mono);font-size:10px;color:var(--dim)}
+.ptable .r{text-align:right}
+.ptable .num{font-family:var(--mono);font-size:11.5px;color:var(--fg-2)}
+.mini.danger{color:#C08A7A;border-color:#3A201C}
+.mini.danger:hover{background:#1B120F;color:#E5A08C}
+.empty{padding:26px;text-align:center;font-size:11.5px;color:var(--dim)}
+
+.form{margin:14px 18px 0;display:flex;flex-direction:column;gap:14px;max-width:720px}
+.field{display:flex;flex-direction:column;gap:6px}
+.field > span{font-size:11.5px;color:var(--fg-2)}
+.field textarea,.field input[type='text'],.field input:not([type]){
+  background:#0E1110;border:1px solid var(--line);border-radius:4px;color:var(--fg);
+  font:inherit;font-size:12px;padding:8px 10px;outline:0;resize:vertical;font-family:var(--mono)
+}
+.field textarea:focus,.field input:focus{border-color:#33403A}
+.field em{font-style:normal;font-size:10.5px;color:var(--dim)}
+.field-row{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+.check{display:flex;align-items:center;gap:8px;font-size:11.5px;color:var(--fg-2)}
+.check input{width:14px;height:14px;accent-color:#3FBF86}
+.okhint{font-size:11px;color:var(--green);align-self:center}
+@media (max-width:760px){
+  .ptable{margin:10px 12px 0}
+  .phead{display:none}
+  .prow{grid-template-columns:minmax(0,1fr) 70px 70px;height:auto;padding:10px 12px;row-gap:4px}
+  .prow .num:nth-of-type(3){display:none}
+  .field-row{grid-template-columns:1fr}
+  .form{margin:12px 12px 0}
+}
+
+/* 设置页细节 */
+.main > .band{margin-top:auto}
+.form .actions .b{flex:none;padding:0 26px;height:32px;font-size:12px}
+.form .actions{align-items:center;gap:12px}
+.check input{width:13px;height:13px}
+@media (min-width:1400px){.form{max-width:820px}}

@@ -87,3 +87,29 @@ export function mockInspect(id: string) {
     mounts: [],
   };
 }
+
+export function mockImages() {
+  const seen = new Map<string, { id: string; tags: string[]; size: number; created: number; containers: number; dangling: boolean }>();
+  for (const row of mockList()) {
+    const name = row.image;
+    const tag = name;
+    const key = name;
+    if (!seen.has(key)) {
+      seen.set(key, {
+        id: 'sha256:' + Math.abs(hash(name)).toString(16).padStart(12, '0').slice(0, 12),
+        tags: [tag],
+        size: 40_000_000 + (Math.abs(hash(name)) % 900_000_000),
+        created: Date.now() - 86_400_000 * (3 + (Math.abs(hash(name)) % 30)),
+        containers: 1,
+        dangling: false,
+      });
+    }
+  }
+  return [...seen.values()].sort((a, b) => b.size - a.size);
+}
+
+function hash(s: string) {
+  let h = 0;
+  for (let i = 0; i < s.length; i += 1) h = (h * 31 + s.charCodeAt(i)) | 0;
+  return h;
+}

@@ -3,9 +3,11 @@ import { serveStatic } from '@hono/node-server/serve-static';
 import fs from 'node:fs';
 import path from 'node:path';
 import { act, inspectOne, listContainers, renameOne, type ContainerRow, type StatSample } from './docker.ts';
-import { mockAct, mockInspect, mockList, mockRename } from './mock.ts';
+import { mockAct, mockImages, mockInspect, mockList, mockRename } from './mock.ts';
 import { applyVerdicts, checkImages, pendingUpdates } from './updates.ts';
 import { getJob, newJob, runUpdate } from './update.ts';
+import { listImages, removeImage, tagImage } from './images.ts';
+import { loadSettings, saveSettings, validateSettings } from './settings.ts';
 
 export type AppOptions = {
   mock: boolean;
@@ -129,6 +131,51 @@ export function createApp(opts: AppOptions) {
     } catch (err) {
       return c.json({ error: (err as Error).message }, 500);
     }
+  });
+
+  app.get('/api/images', async (c) => {
+    try {
+      const items = mock ? mockImages() : await listImages();
+      return c.json({ items, totalSize: items.reduce((n, i) => n + i.size, 0) });
+    } catch (err) {
+      return c.json({ error: (err as Error).message }, 500);
+    }
+  });
+
+  app.delete('/api/images/:id', async (c) => {
+    const id = c.req.param('id');
+    const force = c.req.query('force') === '1';
+    try {
+      if (!mock) await removeImage(id, force);
+      return c.json({ ok: true, id });
+    } catch (err) {
+      return c.json({ error: (err as Error).message }, 500);
+    }
+  });
+
+  app.post('/api/images/tag', async (c) => {
+    let body: { source?: string; repo?: string; tag?: string } = {};
+    try { body = (await c.req.json()) as typeof body; } catch { return c.json({ error: 'invalid json' }, 400); }
+    if (!body.source || !body.repo || !body.tag) return c.json({ error: 'source / repo / tag 都必填' }, 400);
+    if (!/^[a-zA-Z0-9][a-zA-Z0-9_.\/-]*$/.test(body.repo)) return c.json({ error: 'repo 不合法' }, 400);
+    if (!/^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,126}$/.test(body.tag)) return c.json({ error: 'tag 不合法' }, 400);
+    try {
+      if (!mock) await tagImage(body.source, body.repo, body.tag);
+      return c.json({ ok: true });
+    } catch (err) {
+      return c.json({ error: (err as Error).message }, 500);
+    }
+  });
+
+  app.get('/api/settings', (c) => c.json(loadSettings()));
+
+  app.put('/api/settings', async (c) => {
+    let body: Record<string, unknown> = {};
+    try { body = (await c.req.json()) as Record<string, unknown>; } catch { return c.json({ error: 'invalid json' }, 400); }
+    const res = validateSettings(body);
+    if (!res.ok) return c.json({ error: res.error }, 400);
+    saveSettings(res.value);
+    return c.json(res.value);
   });
 
   // 静态资源（vite 产物）。测试环境不挂，避免依赖 dist 存在。
