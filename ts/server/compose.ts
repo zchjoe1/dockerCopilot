@@ -74,3 +74,52 @@ export function applyProject(file: string): Promise<{ code: number; output: stri
     child.on('close', (code) => resolve({ code: code ?? -1, output: output.slice(-4000) }));
   });
 }
+
+/** 把容器 inspect 转成 compose 片段（对应旧版 backup2compose）。 */
+export function containerToCompose(info: {
+  Name?: string;
+  Config?: Record<string, unknown>;
+  HostConfig?: Record<string, unknown>;
+  Mounts?: Array<{ Type: string; Source?: string; Name?: string; Destination: string; RW: boolean }>;
+  NetworkSettings?: { Networks?: Record<string, unknown>; Ports?: Record<string, Array<{ HostIp?: string; HostPort?: string }> | null> };
+}): string {
+  const name = (info.Name || 'container').replace(/^\//, '');
+  const cfg = (info.Config || {}) as { Image?: string; Env?: string[]; Cmd?: unknown; Entrypoint?: unknown; WorkingDir?: string };
+  const host = (info.HostConfig || {}) as {
+    RestartPolicy?: { Name?: string };
+    NetworkMode?: string;
+    PortBindings?: Record<string, Array<{ HostIp?: string; HostPort?: string }>>;
+    Binds?: string[];
+  };
+  const lines: string[] = ['services:', `  ${name}:`, `    image: ${quote(cfg.Image ?? 'unknown')}`];
+  if (cfg.Env?.length) {
+    lines.push('    environment:');
+    for (const e of cfg.Env) lines.push(`      - ${quote(e)}`);
+  }
+  if (Array.isArray(cfg.Cmd) && cfg.Cmd.length) lines.push(`    command: ${quote(cfg.Cmd.join(' '))}`);
+  if (cfg.WorkingDir) lines.push(`    working_dir: ${quote(cfg.WorkingDir)}`);
+  if (host.RestartPolicy?.Name) lines.push(`    restart: ${host.RestartPolicy.Name}`);
+  if (host.NetworkMode && host.NetworkMode !== 'default') lines.push(`    network_mode: ${host.NetworkMode}`);
+  const binds = host.Binds?.length ? host.Binds : (info.Mounts || [])
+    .filter((m) => m.Type === 'bind' && m.Source && m.Destination)
+    .map((m) => `${m.Source}:${m.Destination}${m.RW ? '' : ':ro'}`);
+  if (binds.length) {
+    lines.push('    volumes:');
+    for (const b of binds) lines.push(`      - ${quote(b)}`);
+  }
+  const ports = host.PortBindings || {};
+  const portLines: string[] = [];
+  for (const [containerPort, bindsArr] of Object.entries(ports)) {
+    for (const b of bindsArr || []) {
+      const hostPort = b.HostPort || '';
+      portLines.push(`      - ${quote(`${hostPort}:${containerPort}`)}`);
+    }
+  }
+  if (portLines.length) lines.push('    ports:', ...portLines);
+  return `${lines.join('\n')}\n`;
+}
+
+function quote(v: string): string {
+  if (/^[A-Za-z0-9_./:@-]+$/.test(v)) return v;
+  return `"${v.replace(/"/g, '\\"')}"`;
+}

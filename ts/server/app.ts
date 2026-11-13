@@ -3,13 +3,15 @@ import { serveStatic } from '@hono/node-server/serve-static';
 import fs from 'node:fs';
 import path from 'node:path';
 import { act, inspectOne, listContainers, renameOne, type ContainerRow, type StatSample } from './docker.ts';
-import { MOCK_COMPOSE, mockAct, mockBackups, mockComposeProjects, mockCreateBackup, mockImages, mockInspect, mockList, mockRename } from './mock.ts';
+import { MOCK_COMPOSE, mockAct, mockIcons, mockBackups, mockComposeProjects, mockCreateBackup, mockImages, mockInspect, mockList, mockRename } from './mock.ts';
 import { applyVerdicts, checkImages, pendingUpdates } from './updates.ts';
 import { getJob, newJob, runUpdate } from './update.ts';
 import { listImages, removeImage, tagImage } from './images.ts';
 import { loadSettings, saveSettings, validateSettings } from './settings.ts';
 import { createBackup, listBackups, removeBackup, restoreBackup } from './backups.ts';
-import { applyProject, listProjects, readProject, saveProject } from './compose.ts';
+import { docker } from './docker.ts';
+import { applyProject, containerToCompose, listProjects, readProject, saveProject } from './compose.ts';
+import { deleteIcon, listIcons, readIcon, saveIcon } from './icons.ts';
 
 export type AppOptions = {
   mock: boolean;
@@ -262,6 +264,67 @@ export function createApp(opts: AppOptions) {
     if (mock) return c.json({ ok: true, code: 0, output: '（mock）服务已启动' });
     const res = await applyProject(body.file);
     return c.json({ ok: res.code === 0, ...res }, res.code === 0 ? 200 : 500);
+  });
+
+
+  // ── 图标 ─────────────────────────────────────────────
+  app.get('/api/icons', (c) => c.json({ items: listIcons() }));
+
+  app.post('/api/icons', async (c) => {
+    try {
+      const body = await c.req.parseBody();
+      const file = body.file;
+      const image = body.image;
+      if (!(file instanceof File)) return c.json({ error: '缺少 file 字段' }, 400);
+      const bytes = new Uint8Array(await file.arrayBuffer());
+      const meta = saveIcon(String(image || file.name || 'icon'), bytes, file.type || 'image/png');
+      return c.json({ ok: true, item: meta });
+    } catch (err) {
+      return c.json({ error: (err as Error).message }, 400);
+    }
+  });
+
+  app.get('/api/icons/:name', (c) => {
+    const got = readIcon(c.req.param('name'));
+    if (!got) return c.json({ error: 'not found' }, 404);
+    const type = got.ext === '.svg' ? 'image/svg+xml' : got.ext === '.png' ? 'image/png' : got.ext === '.webp' ? 'image/webp' : got.ext === '.gif' ? 'image/gif' : 'image/jpeg';
+    return c.body(got.bytes as unknown as ArrayBuffer, 200, { 'content-type': type });
+  });
+
+  app.delete('/api/icons/:name', (c) => {
+    deleteIcon(c.req.param('name'));
+    return c.json({ ok: true });
+  });
+
+  // ── 版本与自更新 ─────────────────────────────────────
+  app.get('/api/version', (c) =>
+    c.json({
+      name: 'dc-ts',
+      version: process.env.npm_package_version || '0.1.0',
+      node: process.version,
+      mode: mock ? 'mock' : 'docker',
+      uptimeSec: Math.round(process.uptime()),
+    }),
+  );
+
+  app.put('/api/program', (c) =>
+    c.json(
+      { error: '容器部署下不支持程序自更新：请更新镜像（docker pull + 重建容器），旧版的 PUT /program 面向裸机二进制。' },
+      501,
+    ),
+  );
+
+  // 对应旧版 /container/backup2compose：把容器导出成 compose 片段
+  app.get('/api/compose/export', async (c) => {
+    const id = c.req.query('container');
+    try {
+      if (mock) return c.text(MOCK_COMPOSE, 200, { 'content-type': 'text/yaml; charset=utf-8' });
+      if (!id) return c.json({ error: 'container 必填' }, 400);
+      const info = await docker.getContainer(id).inspect();
+      return c.text(containerToCompose(info as never), 200, { 'content-type': 'text/yaml; charset=utf-8' });
+    } catch (err) {
+      return c.json({ error: (err as Error).message }, 500);
+    }
   });
 
   // 静态资源（vite 产物）。测试环境不挂，避免依赖 dist 存在。

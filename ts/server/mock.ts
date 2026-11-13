@@ -115,6 +115,8 @@ function hash(s: string) {
 }
 
 // ── 备份与 compose 的 mock ─────────────────────
+export const mockIcons: Array<{ name: string; url: string; size: number; uploadedAt: number }> = [];
+
 export const mockBackups: Array<{ file: string; name: string; image: string; createdAt: number; size: number }> = [];
 
 export function mockCreateBackup(containerId: string) {

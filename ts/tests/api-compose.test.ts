@@ -86,3 +86,31 @@ describe('备份接口', () => {
     assert.equal(res.status, 500);
   });
 });
+
+describe('版本与自更新', () => {
+  test('版本接口返回名称/模式/运行时长', async () => {
+    const body = (await (await app.request('/api/version')).json()) as {
+      name: string; mode: string; node: string; uptimeSec: number;
+    };
+    assert.equal(body.name, 'dc-ts');
+    assert.equal(body.mode, 'mock');
+    assert.match(body.node, /^v\d+/);
+    assert.ok(body.uptimeSec >= 0);
+  });
+
+  test('自更新在容器部署下明确拒绝（501）', async () => {
+    const res = await app.request('/api/program', { method: 'PUT' });
+    assert.equal(res.status, 501);
+    const body = (await res.json()) as { error: string };
+    assert.match(body.error, /更新镜像/);
+  });
+
+  test('导出 compose 片段', async () => {
+    const res = await app.request('/api/compose/export?container=mock0');
+    assert.equal(res.status, 200);
+    assert.match(res.headers.get('content-type') || '', /yaml/);
+    const text = await res.text();
+    assert.match(text, /services:/);
+    assert.match(text, /image:/);
+  });
+});
